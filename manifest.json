@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "com.aktivesolutions.bw-vault",
+  "name": "BW Vault",
+  "version": "1.0.0",
+  "author": "keboy",
+  "description": "Bitwarden vault overlay powered by the bw CLI. Unlock, search, and copy passwords without leaving your terminal workflow.",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Vault.qml"
+  }
+}
