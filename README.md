@@ -6,14 +6,20 @@ Rewritten in Quickshell/QML from the [bw-tui](https://github.com/keboy/bw-tui) B
 
 ## Features
 
-- **Unlock screen** — email + master password, or just the password when `bw` is already authenticated. The master password travels through the child process environment (`bw --passwordenv`), never argv.
-- **Email 2FA** — when two-step login is enabled, `bw` sends a verification code to your email and the overlay shows a code input to complete login.
-- **New-device approval** — if Bitwarden also requires approving this device (a second emailed OTP), the overlay explains that the current `bw` CLI cannot accept that code non-interactively and guides you to approve the device via the emailed link or the Bitwarden app, then re-checks.
+- **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`) using `BW_CLIENTID`/`BW_CLIENTSECRET` in the child process environment, never argv. This avoids CLI-unsupported 2FA methods and the interactive new-device verification prompt.
+- **Unlock screen** — client_id + client_secret on first login, then master password; once authenticated, only the master password is needed. The master password travels through the child process environment (`bw --passwordenv`), never argv.
 - **Searchable item list** — type to filter, arrow keys / `j` `k` to move, Enter to open.
 - **Item detail** — reveal password (`p`), copy username (`c`), copy password (`y`) via `wl-copy`.
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine.
 - **Lock** — `l` locks the vault and clears the stored session.
 - **Native Omarchy theming** — built on `BorderSurface`, `Button`, `TextField`, and `Color.menu.*` tokens, so it matches your theme.
+
+## Setup: personal API key
+
+1. In the Bitwarden web app, go to **Settings → Security → Keys**.
+2. Select **View API key** and enter your master password.
+3. Note the `client_id` (format `user.xxxx`) and `client_secret`.
+4. Enter them in the overlay's unlock screen the first time you log in. They are passed to `bw login --apikey` via the process environment, never argv or a stored file.
 
 ## Requirements
 
@@ -76,7 +82,7 @@ omarchy plugin remove com.aktivesolutions.bw-vault
 
 ## Security notes
 
-- The master password is written only to the child process environment (`bw --passwordenv`), never to argv or any QML property that outlives the unlock flow.
+- The client_id, client_secret, and master password are written only to the child process environment (`BW_CLIENTID`/`BW_CLIENTSECRET`/`BW_VAULT_MASTER_PASSWORD`), never to argv or any file.
 - Item passwords are fetched on demand (`bw get item <id>`) and held in a single QML property that is cleared on close/lock.
 - The session key is stored in the OS keyring via `secret-tool`. If that fails, the session is held in memory only.
 - This plugin runs unsandboxed in your shell process, like all Omarchy plugins. Review the source before trusting it.
