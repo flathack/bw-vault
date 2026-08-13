@@ -626,7 +626,6 @@ Item {
             else if (event.text === "l") { root.lockVault(); event.accepted = true }
           }
         }
-      }
 
       Timer {
         id: flashTimer
@@ -1031,6 +1030,7 @@ Item {
             font.pixelSize: Style.font.caption
           }
         }
+      }
       }
     }
   }
