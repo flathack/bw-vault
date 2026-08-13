@@ -54,13 +54,13 @@ sudo pacman -S bitwarden-cli wl-clipboard libsecret
 ## Install
 
 ```sh
-omarchy plugin add https://github.com/keboy/bw-vault.git --enable
+omarchy plugin add https://github.com/alkevintan/bw-vault.git --enable
 ```
 
 Or without enabling right away:
 
 ```sh
-omarchy plugin add https://github.com/keboy/bw-vault.git
+omarchy plugin add https://github.com/alkevintan/bw-vault.git
 omarchy plugin enable com.aktivesolutions.bw-vault
 ```
 
