@@ -5,6 +5,12 @@
 // (Secret Service via secret-tool) so the master password is only needed
 // once per machine.
 //
+// Authentication uses the personal API key (bw login --apikey). This is the
+// recommended CLI auth when 2FA uses a method the CLI can't drive, and it
+// avoids the interactive new-device verification prompt entirely. The flow
+// is: `bw login --apikey` with BW_CLIENTID/BW_CLIENTSECRET, then `bw unlock`
+// with the master password to obtain the session key.
+//
 // This file is pure JS. The QML side owns all Process lifecycle; the model
 // only builds commands and parses output. Secrets (master password, session
 // token, item passwords) only ever live in QML properties / process
@@ -63,22 +69,19 @@ function statusCommand(session) {
   return buildCommand(["status"], session, true)
 }
 
-// Two-factor login. Email (method 1) is used because the CLI can send the
-// verification email itself and complete the login with --code, which the
-// GUI can surface as an input box. A first call without a code sends the
-// email and fails with "Code is required."; the flow then re-runs with the
-// user's code. No TTY is available under Quickshell, so non-interactive mode
-// is forced — otherwise the CLI would hang on its interactive prompt.
-function loginCommand(email, code, useSession) {
-  var args = ["login", email, "--passwordenv", PASSWORD_ENV, "--method", "1"]
-  if (code) args = args.concat(["--code", String(code)])
-  return buildCommand(args, "", false)
+// Personal API key login. The client id/secret travel through the process
+// environment (bw reads BW_CLIENTID/BW_CLIENTSECRET), never argv. This is
+// fully non-interactive and bypasses both 2FA and new-device verification.
+function apikeyLoginCommand() {
+  return buildCommand(["login", "--apikey"], "", false)
 }
 
-// Environment for login: keep the master password off argv and force
+// Environment for login: client id/secret + master password off argv, and
 // non-interactive mode so the CLI never waits on a TTY prompt.
-function loginEnvironment(password) {
+function apikeyLoginEnvironment(clientId, clientSecret, password) {
   var env = passwordEnvironment(password)
+  env.BW_CLIENTID = String(clientId || "")
+  env.BW_CLIENTSECRET = String(clientSecret || "")
   env.BW_NOINTERACTION = "true"
   return env
 }
