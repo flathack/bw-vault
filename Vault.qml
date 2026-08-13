@@ -826,27 +826,27 @@ Item {
 
             DetailRow {
               label: "type"
-              value: root.detail.type
+              value: root.detail ? root.detail.type : ""
               foreground: root.foreground
               dimForeground: Qt.darker(root.foreground, 1.4)
               fontFamily: root.fontFamily
             }
             DetailRow {
               label: "username"
-              value: root.detail.username
+              value: root.detail ? root.detail.username : ""
               foreground: root.foreground
               dimForeground: Qt.darker(root.foreground, 1.4)
               fontFamily: root.fontFamily
             }
             DetailRow {
               label: "password"
-              value: root.showPass ? root.detailPassword : "••••••••••••"
+              value: root.detail ? (root.showPass ? root.detailPassword : "••••••••••••") : ""
               foreground: root.foreground
               dimForeground: Qt.darker(root.foreground, 1.4)
               fontFamily: root.fontFamily
             }
             Repeater {
-              model: root.detail.uris
+              model: root.detail && root.detail.uris ? root.detail.uris : []
               DetailRow {
                 label: "url"
                 value: modelData
@@ -857,7 +857,7 @@ Item {
             }
             DetailRow {
               label: "notes"
-              value: root.detail.notes
+              value: root.detail ? root.detail.notes : ""
               foreground: root.foreground
               dimForeground: Qt.darker(root.foreground, 1.4)
               fontFamily: root.fontFamily
