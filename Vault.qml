@@ -323,6 +323,15 @@ Item {
     })
   }
 
+  IpcHandler {
+    target: "bw-vault"
+    function ping(): string { return "ok" }
+    function open(): void { root.open("{}") }
+    function close(): void { root.dismiss() }
+    function toggle(): void { root.opened ? root.dismiss() : root.open("{}") }
+    function state(): string { return root.state() }
+  }
+
   function itemTypeGlyph(type) {
     switch (type) {
     case "login": return "󰍤"
