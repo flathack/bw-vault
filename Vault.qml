@@ -326,7 +326,10 @@ Item {
       id: sessionLookupOut
       waitForEnd: true
     }
-    onExited: root.onSessionLookup(sessionLookupOut.text)
+    onExited: function(exitCode) {
+      console.log("[bw-vault] sessionLookup exited", exitCode, "text=", JSON.stringify(sessionLookupOut.text))
+      root.onSessionLookup(sessionLookupOut.text)
+    }
   }
 
   Process {
@@ -355,6 +358,7 @@ Item {
     }
     onExited: function(exitCode) {
       if (!root.opened) return
+      console.log("[bw-vault] statusProc exited", exitCode, "hadSession=", statusProc.hadSession, "text=", JSON.stringify(statusOut.text))
       root.onStatusOutput(statusOut.text, statusProc.hadSession)
     }
   }
