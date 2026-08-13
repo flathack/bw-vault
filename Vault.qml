@@ -49,7 +49,7 @@ Item {
   property string detailPassword: ""
   property bool showPass: false
 
-  // "idle" | "login" | "code" | "unlock" — which auth step is in flight
+  // "idle" | "login" | "code" | "device" | "unlock" — which auth step is in flight
   property string authPhase: "idle"
   property bool twoFactorCodeAttempted: false
   property bool loading: false
@@ -176,6 +176,18 @@ Item {
   }
 
   // -- unlock ----------------------------------------------------------------
+
+  // After device approval, re-check status. If bw is now authenticated
+  // (approval completed), it goes straight to the list; otherwise it lands
+  // back on the unlock form so the user can log in again.
+  function retryLogin() {
+    root.status = "checking"
+    root.authPhase = "idle"
+    root.error = ""
+    root.loading = true
+    root.sessionLookupHandled = false
+    sessionLookup.running = true
+  }
 
   function startUnlock() {
     if (root.loading) return
@@ -433,8 +445,24 @@ Item {
         return
       }
 
+      var codeRequired = err.indexOf("Code is required") !== -1 || err.indexOf("code is required") !== -1
+
+      // A second "Code is required." after the 2FA code was already accepted
+      // means Bitwarden now wants new-device approval. This bw CLI version
+      // only accepts that OTP through an interactive TTY prompt (there is no
+      // --code equivalent), so it cannot be completed here. Tell the user to
+      // approve the device instead of looping on fresh device emails.
+      if (codeRequired && root.twoFactorCodeAttempted) {
+        root.loading = false
+        root.error = ""
+        root.authPhase = "device"
+        root.twoFactorCodeAttempted = false
+        root.twoFactorCode = ""
+        return
+      }
+
       // The email was sent and bw wants the 2FA code — surface the code field.
-      if (err.indexOf("Code is required") !== -1 || err.indexOf("code is required") !== -1) {
+      if (codeRequired) {
         root.loading = false
         root.error = ""
         root.authPhase = "code"
@@ -692,7 +720,7 @@ Item {
 
           TextField {
             id: emailField
-            visible: root.emailNeeded && !root.loading && root.status !== "checking" && root.authPhase !== "code"
+            visible: root.emailNeeded && !root.loading && root.status !== "checking" && root.authPhase !== "code" && root.authPhase !== "device"
             width: parent.width
             placeholderText: "you@example.com"
             foreground: root.foreground
@@ -705,7 +733,7 @@ Item {
 
           TextField {
             id: passField
-            visible: !root.loading && root.status !== "checking" && root.authPhase !== "code"
+            visible: !root.loading && root.status !== "checking" && root.authPhase !== "code" && root.authPhase !== "device"
             width: parent.width
             placeholderText: "Master password"
             password: true
@@ -732,6 +760,39 @@ Item {
 
           Text {
             width: parent.width
+            visible: root.authPhase === "device"
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            text: "Bitwarden needs to approve this new device. Check your email for the approval message from Bitwarden and approve it, then try again."
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Button {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: root.authPhase === "device"
+            text: "Check again"
+            hasCursor: true
+            foreground: root.foreground
+            accent: Color.accent
+            fontFamily: root.fontFamily
+            onClicked: root.retryLogin()
+          }
+
+          Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            visible: root.authPhase === "device"
+            text: "Approving in the Bitwarden app or via the emailed link also works."
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: parent.width
             visible: root.error !== "" && !root.loading
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
@@ -743,7 +804,7 @@ Item {
 
           Button {
             anchors.horizontalCenter: parent.horizontalCenter
-            visible: !root.loading && root.status !== "checking" && root.authPhase !== "code"
+            visible: !root.loading && root.status !== "checking" && root.authPhase !== "code" && root.authPhase !== "device"
             text: "Unlock"
             hasCursor: true
             foreground: root.foreground
@@ -766,7 +827,7 @@ Item {
           Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            visible: !root.loading && root.status !== "checking"
+            visible: !root.loading && root.status !== "checking" && root.authPhase !== "device"
             text: "esc to close"
             color: Qt.darker(root.foreground, 1.5)
             font.family: root.fontFamily
