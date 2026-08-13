@@ -38,6 +38,7 @@ Item {
   property string heldSession: ""
   property string email: ""
   property string masterPassword: ""
+  property string twoFactorCode: ""
 
   property var items: []
   property var filteredItems: []
@@ -48,8 +49,9 @@ Item {
   property string detailPassword: ""
   property bool showPass: false
 
-  // "idle" | "login" | "unlock" — which auth step is in flight
+  // "idle" | "login" | "code" | "unlock" — which auth step is in flight
   property string authPhase: "idle"
+  property bool twoFactorCodeAttempted: false
   property bool loading: false
   property string error: ""
   property string flash: ""
@@ -87,8 +89,11 @@ Item {
     root.selectedIndex = 0
     root.loading = true
     root.sessionLookupHandled = false
+    root.twoFactorCodeAttempted = false
+    root.twoFactorCode = ""
     emailField.text = ""
     passField.text = ""
+    codeField.text = ""
 
     // Start the keyring lookup, then let its handler run the status chain.
     sessionLookup.running = true
@@ -187,16 +192,32 @@ Item {
     root.authPhase = ""
 
     if (root.emailNeeded) {
-      // First login on this machine: approve the device in the Bitwarden app,
-      // then unlock returns the session key.
+      // First login on this machine. bw sends the 2FA verification email and
+      // exits with "Code is required."; the flow then surfaces the code field.
       root.authPhase = "login"
-      loginProc.command = VaultModel.loginCommand(String(root.email).trim(), root.heldSession)
-      loginProc.environment = VaultModel.passwordEnvironment(root.masterPassword)
+      loginProc.command = VaultModel.loginCommand(String(root.email).trim(), "", false)
+      loginProc.environment = VaultModel.loginEnvironment(root.masterPassword)
       loginProc.running = true
     } else {
       root.authPhase = "unlock"
       root.runUnlock()
     }
+  }
+
+  // Called when the user submits the emailed 2FA code.
+  function submitCode() {
+    var code = String(root.twoFactorCode).trim()
+    if (!code) {
+      root.error = "Verification code required"
+      return
+    }
+    root.error = ""
+    root.loading = true
+    root.twoFactorCodeAttempted = true
+    root.authPhase = "login"
+    loginProc.command = VaultModel.loginCommand(String(root.email).trim(), code, false)
+    loginProc.environment = VaultModel.loginEnvironment(root.masterPassword)
+    loginProc.running = true
   }
 
   function runUnlock() {
@@ -392,24 +413,49 @@ Item {
 
   Process {
     id: loginProc
+    property string collectedErr: ""
     stdout: StdioCollector {
       waitForEnd: true
     }
     stderr: StdioCollector {
+      id: loginErr
       waitForEnd: true
-      onStreamFinished: if (text && root.opened) {
-        root.error = String(text).trim() || "Login failed"
-        root.loading = false
-        root.authPhase = ""
-      }
     }
     onExited: function(exitCode) {
+      if (!root.opened) return
+      var err = String(loginErr.text || "").trim()
+
       if (exitCode === 0) {
+        root.error = ""
         root.runUnlock()
-      } else if (root.loading && root.opened && root.error === "") {
-        root.error = "Login failed"
+        return
+      }
+
+      // The email was sent and bw wants the 2FA code — surface the code field.
+      if (err.indexOf("Code is required") !== -1 || err.indexOf("code is required") !== -1) {
         root.loading = false
-        root.authPhase = ""
+        root.error = ""
+        root.authPhase = "code"
+        root.twoFactorCodeAttempted = false
+        root.twoFactorCode = ""
+        Qt.callLater(function() {
+          if (root.opened) codeField.forceActiveFocus()
+        })
+        return
+      }
+
+      if (root.loading) {
+        root.error = err || "Login failed"
+        root.loading = false
+        // A bad code: stay on the code field so it can be retyped.
+        if (root.twoFactorCodeAttempted) {
+          root.authPhase = "code"
+          Qt.callLater(function() {
+            if (root.opened) codeField.forceActiveFocus()
+          })
+        } else {
+          root.authPhase = ""
+        }
       }
     }
   }
@@ -547,7 +593,7 @@ Item {
             return
           }
           // While an input field holds focus, let it own the keys.
-          if (emailField.activeFocus || passField.activeFocus) return
+          if (emailField.activeFocus || passField.activeFocus || codeField.activeFocus) return
 
           if (root.screen === "list") {
             if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -624,15 +670,28 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             text: root.status === "checking"
               ? "Checking vault…"
-              : (root.authPhase === "login" ? "Approve the device in Bitwarden…" : "Unlocking…")
+              : (root.authPhase === "login"
+                  ? (root.twoFactorCodeAttempted ? "Verifying code…" : "Sending verification code…")
+                  : "Unlocking…")
             color: Qt.darker(root.foreground, 1.5)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
           }
 
+          Text {
+            width: parent.width
+            visible: root.authPhase === "code"
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            text: "Enter the verification code sent to " + (root.email || "your email")
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
           TextField {
             id: emailField
-            visible: root.emailNeeded && !root.loading && root.status !== "checking"
+            visible: root.emailNeeded && !root.loading && root.status !== "checking" && root.authPhase !== "code"
             width: parent.width
             placeholderText: "you@example.com"
             foreground: root.foreground
@@ -645,7 +704,7 @@ Item {
 
           TextField {
             id: passField
-            visible: !root.loading && root.status !== "checking"
+            visible: !root.loading && root.status !== "checking" && root.authPhase !== "code"
             width: parent.width
             placeholderText: "Master password"
             password: true
@@ -655,6 +714,19 @@ Item {
             font.pixelSize: Style.font.body
             onTextChanged: root.masterPassword = text
             onAccepted: root.startUnlock()
+          }
+
+          TextField {
+            id: codeField
+            visible: root.authPhase === "code"
+            width: parent.width
+            placeholderText: "6-digit code"
+            foreground: root.foreground
+            accent: Color.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            onTextChanged: root.twoFactorCode = text
+            onAccepted: root.submitCode()
           }
 
           Text {
@@ -670,13 +742,24 @@ Item {
 
           Button {
             anchors.horizontalCenter: parent.horizontalCenter
-            visible: !root.loading && root.status !== "checking"
+            visible: !root.loading && root.status !== "checking" && root.authPhase !== "code"
             text: "Unlock"
             hasCursor: true
             foreground: root.foreground
             accent: Color.accent
             fontFamily: root.fontFamily
             onClicked: root.startUnlock()
+          }
+
+          Button {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: root.authPhase === "code"
+            text: "Verify"
+            hasCursor: true
+            foreground: root.foreground
+            accent: Color.accent
+            fontFamily: root.fontFamily
+            onClicked: root.submitCode()
           }
 
           Text {

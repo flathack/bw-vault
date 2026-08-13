@@ -63,10 +63,24 @@ function statusCommand(session) {
   return buildCommand(["status"], session, true)
 }
 
-// method 0 = device. On a brand-new account this pushes a 2FA approval to
-// the Bitwarden app; the flow then runs `bw unlock` for the session key.
-function loginCommand(email, session) {
-  return buildCommand(["login", email, "--passwordenv", PASSWORD_ENV, "--method", "0"], session, false)
+// Two-factor login. Email (method 1) is used because the CLI can send the
+// verification email itself and complete the login with --code, which the
+// GUI can surface as an input box. A first call without a code sends the
+// email and fails with "Code is required."; the flow then re-runs with the
+// user's code. No TTY is available under Quickshell, so non-interactive mode
+// is forced — otherwise the CLI would hang on its interactive prompt.
+function loginCommand(email, code, useSession) {
+  var args = ["login", email, "--passwordenv", PASSWORD_ENV, "--method", "1"]
+  if (code) args = args.concat(["--code", String(code)])
+  return buildCommand(args, "", false)
+}
+
+// Environment for login: keep the master password off argv and force
+// non-interactive mode so the CLI never waits on a TTY prompt.
+function loginEnvironment(password) {
+  var env = passwordEnvironment(password)
+  env.BW_NOINTERACTION = "true"
+  return env
 }
 
 function unlockCommand() {
