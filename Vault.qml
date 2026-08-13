@@ -48,6 +48,8 @@ Item {
   property string detailPassword: ""
   property bool showPass: false
 
+  // "idle" | "login" | "unlock" — which auth step is in flight
+  property string authPhase: "idle"
   property bool loading: false
   property string error: ""
   property string flash: ""
@@ -87,8 +89,6 @@ Item {
     root.sessionLookupHandled = false
     emailField.text = ""
     passField.text = ""
-    emailField.focus = root.emailNeeded
-    passField.focus = !root.emailNeeded
 
     // Start the keyring lookup, then let its handler run the status chain.
     sessionLookup.running = true
@@ -101,6 +101,7 @@ Item {
   function close() {
     root.opened = false
     root.loading = false
+    root.authPhase = ""
     root.masterPassword = ""
     root.detailPassword = ""
     root.showPass = false
@@ -183,19 +184,23 @@ Item {
     }
     root.error = ""
     root.loading = true
+    root.authPhase = ""
 
     if (root.emailNeeded) {
       // First login on this machine: approve the device in the Bitwarden app,
       // then unlock returns the session key.
+      root.authPhase = "login"
       loginProc.command = VaultModel.loginCommand(String(root.email).trim(), root.heldSession)
       loginProc.environment = VaultModel.passwordEnvironment(root.masterPassword)
       loginProc.running = true
     } else {
+      root.authPhase = "unlock"
       root.runUnlock()
     }
   }
 
   function runUnlock() {
+    root.authPhase = "unlock"
     unlockProc.environment = VaultModel.passwordEnvironment(root.masterPassword)
     unlockProc.command = VaultModel.unlockCommand()
     unlockProc.running = true
@@ -204,6 +209,7 @@ Item {
   function onUnlockSuccess(rawSession) {
     var session = String(rawSession || "").trim()
     root.masterPassword = ""
+    root.authPhase = ""
     if (!session) {
       root.error = "Unlock did not return a session"
       root.loading = false
@@ -394,6 +400,7 @@ Item {
       onStreamFinished: if (text && root.opened) {
         root.error = String(text).trim() || "Login failed"
         root.loading = false
+        root.authPhase = ""
       }
     }
     onExited: function(exitCode) {
@@ -402,6 +409,7 @@ Item {
       } else if (root.loading && root.opened && root.error === "") {
         root.error = "Login failed"
         root.loading = false
+        root.authPhase = ""
       }
     }
   }
@@ -417,12 +425,14 @@ Item {
       onStreamFinished: if (text && root.opened) {
         root.error = String(text).trim() || "Unlock failed"
         root.loading = false
+        root.authPhase = ""
       }
     }
     onExited: function(exitCode) {
       if (exitCode !== 0 && root.loading && root.opened && root.error === "") {
         root.error = "Unlock failed"
         root.loading = false
+        root.authPhase = ""
       }
     }
   }
@@ -526,10 +536,7 @@ Item {
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
           if (event.key === Qt.Key_Escape) {
-            if (emailField.activeFocus || passField.activeFocus) {
-              // Blur the field first; a second Escape closes.
-              keyCatcher.forceActiveFocus()
-            } else if (root.screen === "list" && root.filterText) {
+            if (root.screen === "list" && root.filterText) {
               root.filterText = ""; root.rebuildFilter()
             } else if (root.screen === "detail") {
               root.screen = "list"; root.detail = null; root.detailPassword = ""; root.showPass = false
@@ -613,9 +620,11 @@ Item {
 
           Text {
             width: parent.width
-            visible: root.status === "checking"
+            visible: root.status === "checking" || (root.loading && root.screen === "unlock")
             horizontalAlignment: Text.AlignHCenter
-            text: root.loading ? "Checking vault…" : "Checking vault…"
+            text: root.status === "checking"
+              ? "Checking vault…"
+              : (root.authPhase === "login" ? "Approve the device in Bitwarden…" : "Unlocking…")
             color: Qt.darker(root.foreground, 1.5)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -623,7 +632,7 @@ Item {
 
           TextField {
             id: emailField
-            visible: root.emailNeeded
+            visible: root.emailNeeded && !root.loading && root.status !== "checking"
             width: parent.width
             placeholderText: "you@example.com"
             foreground: root.foreground
@@ -636,6 +645,7 @@ Item {
 
           TextField {
             id: passField
+            visible: !root.loading && root.status !== "checking"
             width: parent.width
             placeholderText: "Master password"
             password: true
@@ -660,6 +670,7 @@ Item {
 
           Button {
             anchors.horizontalCenter: parent.horizontalCenter
+            visible: !root.loading && root.status !== "checking"
             text: "Unlock"
             hasCursor: true
             foreground: root.foreground
@@ -671,9 +682,8 @@ Item {
           Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: root.loading && root.screen === "unlock"
-              ? (root.emailNeeded ? "Approve the device in Bitwarden…" : "Unlocking…")
-              : "esc to close"
+            visible: !root.loading && root.status !== "checking"
+            text: "esc to close"
             color: Qt.darker(root.foreground, 1.5)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
