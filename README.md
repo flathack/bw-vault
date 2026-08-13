@@ -7,6 +7,7 @@ Rewritten in Quickshell/QML from the [bw-tui](https://github.com/keboy/bw-tui) B
 ## Features
 
 - **Unlock screen** — email + master password, or just the password when `bw` is already authenticated. The master password travels through the child process environment (`bw --passwordenv`), never argv.
+- **Email 2FA** — when two-step login is enabled, `bw` sends a verification code to your email and the overlay shows a code input to complete login.
 - **Searchable item list** — type to filter, arrow keys / `j` `k` to move, Enter to open.
 - **Item detail** — reveal password (`p`), copy username (`c`), copy password (`y`) via `wl-copy`.
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine.

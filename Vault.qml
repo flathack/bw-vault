@@ -341,6 +341,8 @@ Item {
       screen: root.screen,
       status: root.status,
       loading: root.loading,
+      authPhase: root.authPhase,
+      twoFactorCode: root.twoFactorCode ? "set" : "",
       heldSession: root.heldSession ? "yes" : "no",
       emailNeeded: root.emailNeeded,
       error: root.error,
