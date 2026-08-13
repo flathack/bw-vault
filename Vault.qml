@@ -323,18 +323,14 @@ Item {
     id: sessionLookup
     command: VaultModel.sessionLookupCommand()
     stdout: StdioCollector {
+      id: sessionLookupOut
       waitForEnd: true
-      onStreamFinished: root.onSessionLookup(text)
     }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (text && root.opened) root.onSessionLookup("")
-    }
+    onExited: root.onSessionLookup(sessionLookupOut.text)
   }
 
   Process {
     id: sessionStore
-    property string session: root.heldSession
     command: VaultModel.sessionStoreCommand()
     stdinEnabled: true
     onStarted: {
@@ -351,12 +347,15 @@ Item {
     id: statusProc
     property bool hadSession: false
     stdout: StdioCollector {
+      id: statusOut
       waitForEnd: true
-      onStreamFinished: root.onStatusOutput(text, statusProc.hadSession)
     }
     stderr: StdioCollector {
       waitForEnd: true
-      onStreamFinished: if (text && root.opened) root.error = String(text).trim()
+    }
+    onExited: function(exitCode) {
+      if (!root.opened) return
+      root.onStatusOutput(statusOut.text, statusProc.hadSession)
     }
   }
 
