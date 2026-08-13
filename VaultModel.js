@@ -61,6 +61,32 @@ function sessionClearCommand() {
   return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
 }
 
+// -- Personal API key persistence --------------------------------------------
+//
+// The client_id / client_secret live in the same OS keyring as the session, as
+// two separate entries under the shared service, so the unlock screen can
+// pre-fill them after the first login. Rotating the key in the web app and
+// logging in again overwrites the stored secret.
+
+const API_KEY_ID_ACCOUNT = "bw-client-id"
+const API_KEY_SECRET_ACCOUNT = "bw-client-secret"
+
+function apiKeyIdLookupCommand() {
+  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", API_KEY_ID_ACCOUNT]
+}
+
+function apiKeySecretLookupCommand() {
+  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", API_KEY_SECRET_ACCOUNT]
+}
+
+function apiKeyIdStoreCommand() {
+  return ["secret-tool", "store", "--label=bw-vault client id", "service", KEYRING_SERVICE, "account", API_KEY_ID_ACCOUNT]
+}
+
+function apiKeySecretStoreCommand() {
+  return ["secret-tool", "store", "--label=bw-vault client secret", "service", KEYRING_SERVICE, "account", API_KEY_SECRET_ACCOUNT]
+}
+
 // -- Commands ----------------------------------------------------------------
 
 // statusCommand(session) — true status; a bogus session just reports

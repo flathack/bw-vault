@@ -11,14 +11,16 @@ import "VaultModel.js" as VaultModel
 // Summon with:
 //   omarchy-shell shell toggle com.aktivesolutions.bw-vault
 //
-// Screens: unlock (email + password) → searchable item list → item detail
+// Screens: unlock (API key + master password) → searchable item list → item detail
 // with copy-username / copy-password / reveal / lock.
 //
 // Session handling mirrors bw-tui: the session token is read from the OS
 // keyring (secret-tool) on open, verified against `bw`, and re-stored after
-// unlock so the master password is asked for once per machine. The master
-// password only ever travels through the child process environment
-// (bw --passwordenv), never argv or a QML property that outlives the flow.
+// unlock so the master password is asked for once per machine. The personal
+// API key (client_id / client_secret) is stored the same way after the first
+// login, so it is pasted from the browser exactly once. The master password
+// only ever travels through the child process environment (bw --passwordenv),
+// never argv or a QML property that outlives the flow.
 
 Item {
   id: root
@@ -69,8 +71,16 @@ Item {
   readonly property string fontFamily: Style.font.menuFamily
 
   readonly property int contentMargin: Style.spacing.panelPadding
-  readonly property int cardWidth: Math.min(Style.space(480), panel.width - Style.gapsOut * 2)
-  readonly property int cardHeight: Math.min(Style.space(560), panel.height - Style.gapsOut * 2)
+  // Floating unlock card: while the API key is needed the overlay shrinks to a
+  // small draggable card and drops keyboard exclusivity, so you can switch to
+  // the browser and copy client_id / client_secret without closing it.
+  readonly property bool floating: root.screen === "unlock" && root.apiKeyNeeded
+  property int floatX: 0
+  property int floatY: 0
+  readonly property int floatW: Math.min(Style.space(480), (panel.screen ? panel.screen.width : Style.space(700)) - Style.gapsOut * 2)
+  readonly property int floatH: Math.min(Style.space(560), (panel.screen ? panel.screen.height : Style.space(700)) - Style.gapsOut * 2)
+  readonly property int cardWidth: root.floating ? root.floatW : Math.min(Style.space(480), panel.width - Style.gapsOut * 2)
+  readonly property int cardHeight: root.floating ? root.floatH : Math.min(Style.space(560), panel.height - Style.gapsOut * 2)
   // The account is not yet authenticated on this machine — the API key is
   // needed to log in. Once authenticated (even locked), only the master
   // password is required to unlock.
@@ -95,8 +105,12 @@ Item {
     clientSecretField.text = ""
     passField.text = ""
 
-    // Start the keyring lookup, then let its handler run the status chain.
+    // Start the keyring lookups (session + personal API key); the session
+    // lookup drives the status chain and the key lookups pre-fill the unlock
+    // screen.
     sessionLookup.running = true
+    apiKeyIdLookup.running = true
+    apiKeySecretLookup.running = true
 
     Qt.callLater(function() {
       if (root.opened) keyCatcher.forceActiveFocus()
@@ -145,6 +159,21 @@ Item {
     statusProc.running = true
   }
 
+  // Keyring-backed API key pre-fill: the client_id / client_secret stored by
+  // a previous login land here, so the unlock screen only needs the master
+  // password from then on.
+  function onApiKeyIdLookup(raw) {
+    var id = String(raw || "").trim()
+    if (root.opened && id) clientIdField.text = id
+    root.focusUnlock()
+  }
+
+  function onApiKeySecretLookup(raw) {
+    var secret = String(raw || "").trim()
+    if (root.opened && secret) clientSecretField.text = secret
+    root.focusUnlock()
+  }
+
   function onStatusOutput(raw, hadSession) {
     var st = VaultModel.parseStatus(raw)
     if (!st) {
@@ -166,13 +195,9 @@ Item {
       return
     }
     root.status = st.authenticated ? "locked" : "unauthenticated"
+    if (root.apiKeyNeeded) root.centerFloat()
     root.loading = false
-    Qt.callLater(function() {
-      if (root.opened) {
-        if (root.apiKeyNeeded) clientIdField.forceActiveFocus()
-        else passField.forceActiveFocus()
-      }
-    })
+    Qt.callLater(function() { root.focusUnlock() })
   }
 
   // -- unlock ----------------------------------------------------------------
@@ -317,6 +342,30 @@ Item {
 
   // -- ui helpers ------------------------------------------------------------
 
+  // Center the floating unlock card on its output. Called whenever the overlay
+  // drops into the unauthenticated state; the card is re-centered on each open
+  // so it never spawns off-screen.
+  function centerFloat() {
+    var sw = panel.screen ? panel.screen.width : 0
+    var sh = panel.screen ? panel.screen.height : 0
+    if (sw > 0) root.floatX = Math.max(0, Math.round((sw - root.floatW) / 2))
+    if (sh > 0) root.floatY = Math.max(0, Math.round((sh - root.floatH) / 2))
+  }
+
+  // Focus the right unlock field: the master password when the API key is
+  // already configured (keyring pre-fill), otherwise the client_id field.
+  // Safe to call repeatedly — hidden fields and in-flight states are no-ops.
+  function focusUnlock() {
+    if (!root.opened) return
+    if (root.status === "checking" || root.loading) return
+    if (root.apiKeyNeeded) {
+      if (root.clientId && root.clientSecret) passField.forceActiveFocus()
+      else clientIdField.forceActiveFocus()
+    } else {
+      passField.forceActiveFocus()
+    }
+  }
+
   function clampIndex(i) {
     if (root.filteredItems.length === 0) return 0
     return Math.max(0, Math.min(i, root.filteredItems.length - 1))
@@ -328,6 +377,8 @@ Item {
       opened: root.opened,
       screen: root.screen,
       status: root.status,
+      floating: root.floating,
+      floatPos: root.floatX + "," + root.floatY,
       loading: root.loading,
       authPhase: root.authPhase,
       clientId: root.clientId ? "set" : "",
@@ -385,6 +436,44 @@ Item {
   }
 
   Process {
+    id: apiKeyIdLookup
+    command: VaultModel.apiKeyIdLookupCommand()
+    stdout: StdioCollector {
+      id: apiKeyIdLookupOut
+      waitForEnd: true
+    }
+    onExited: root.onApiKeyIdLookup(apiKeyIdLookupOut.text)
+  }
+
+  Process {
+    id: apiKeySecretLookup
+    command: VaultModel.apiKeySecretLookupCommand()
+    stdout: StdioCollector {
+      id: apiKeySecretLookupOut
+      waitForEnd: true
+    }
+    onExited: root.onApiKeySecretLookup(apiKeySecretLookupOut.text)
+  }
+
+  Process {
+    id: apiKeyIdStore
+    command: VaultModel.apiKeyIdStoreCommand()
+    stdinEnabled: true
+    onStarted: {
+      write(String(root.clientId || "") + "\n")
+    }
+  }
+
+  Process {
+    id: apiKeySecretStore
+    command: VaultModel.apiKeySecretStoreCommand()
+    stdinEnabled: true
+    onStarted: {
+      write(String(root.clientSecret || "") + "\n")
+    }
+  }
+
+  Process {
     id: statusProc
     property bool hadSession: false
     stdout: StdioCollector {
@@ -416,6 +505,10 @@ Item {
 
       if (exitCode === 0) {
         root.error = ""
+        // Persist the working API key to the keyring (non-fatal) so the next
+        // open pre-fills it and only the master password is needed.
+        apiKeyIdStore.running = true
+        apiKeySecretStore.running = true
         root.runUnlock()
         return
       }
@@ -516,15 +609,23 @@ Item {
   PanelWindow {
     id: panel
     visible: root.opened
-    anchors { top: true; bottom: true; left: true; right: true }
+    width: root.floating ? root.floatW : (panel.screen ? panel.screen.width : 0)
+    height: root.floating ? root.floatH : (panel.screen ? panel.screen.height : 0)
+    anchors.left: true
+    anchors.top: true
+    anchors.right: root.floating ? false : true
+    anchors.bottom: root.floating ? false : true
+    margins.left: root.floating ? root.floatX : 0
+    margins.top: root.floating ? root.floatY : 0
     color: "transparent"
     WlrLayershell.namespace: "com.aktivesolutions.bw-vault"
     WlrLayershell.layer: WlrLayer.Overlay
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    WlrLayershell.keyboardFocus: root.floating ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.Exclusive
     exclusionMode: ExclusionMode.Ignore
 
     Rectangle {
       anchors.fill: parent
+      visible: !root.floating
       color: root.scrim
 
       MouseArea {
@@ -713,7 +814,7 @@ Item {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             visible: !root.loading && root.status !== "checking"
-            text: "esc to close"
+            text: root.floating ? "drag the card to move · esc to close" : "esc to close"
             color: Qt.darker(root.foreground, 1.5)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -977,6 +1078,64 @@ Item {
           }
         }
       }
+      }
+
+      // Drag handle for the floating unlock card: press and drag to move the
+      // card out of the way while you copy credentials from another window.
+      Item {
+        id: dragBar
+        visible: root.floating
+        z: 10
+        height: Style.space(28)
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.topMargin: card.contentTopInset
+        anchors.leftMargin: card.contentLeftInset
+        anchors.rightMargin: card.contentRightInset
+
+        MouseArea {
+          id: dragHandle
+          anchors.fill: parent
+          property bool dragActive: false
+          property real pressGlobalX: 0
+          property real pressGlobalY: 0
+          property int startX: 0
+          property int startY: 0
+          hoverEnabled: true
+          cursorShape: Qt.SizeAllCursor
+          onPressed: function(mouse) {
+            dragActive = true
+            // Global pointer coords are invariant under the window moving, so
+            // the grab point stays pinned to the cursor regardless of compositor
+            // feedback lag when margins update.
+            var g = dragHandle.mapToGlobal(mouse.x, mouse.y)
+            pressGlobalX = g.x
+            pressGlobalY = g.y
+            startX = root.floatX
+            startY = root.floatY
+          }
+          onPositionChanged: function(mouse) {
+            if (!dragActive || !(mouse.buttons & Qt.LeftButton)) return
+            var g = dragHandle.mapToGlobal(mouse.x, mouse.y)
+            var sw = panel.screen ? panel.screen.width : root.floatW
+            var sh = panel.screen ? panel.screen.height : root.floatH
+            root.floatX = Math.max(0, Math.min(startX + (g.x - pressGlobalX), sw - root.floatW))
+            root.floatY = Math.max(0, Math.min(startY + (g.y - pressGlobalY), sh - root.floatH))
+          }
+          onReleased: dragActive = false
+          onCanceled: dragActive = false
+
+          Text {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "󰅆  Bitwarden Vault"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            opacity: 0.85
+          }
+        }
       }
     }
   }

@@ -4,7 +4,7 @@
   "name": "BW Vault",
   "version": "1.0.0",
   "author": "keboy",
-  "description": "Bitwarden vault overlay powered by the bw CLI. Unlock, search, and copy passwords without leaving your terminal workflow.",
+  "description": "Bitwarden vault overlay powered by the bw CLI. Unlock, search, and copy passwords without leaving your current app.",
   "kinds": [
     "overlay"
   ],
