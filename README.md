@@ -8,6 +8,7 @@ Rewritten in Quickshell/QML from the [bw-tui](https://github.com/keboy/bw-tui) B
 
 - **Unlock screen** — email + master password, or just the password when `bw` is already authenticated. The master password travels through the child process environment (`bw --passwordenv`), never argv.
 - **Email 2FA** — when two-step login is enabled, `bw` sends a verification code to your email and the overlay shows a code input to complete login.
+- **New-device approval** — if Bitwarden also requires approving this device (a second emailed OTP), the overlay explains that the current `bw` CLI cannot accept that code non-interactively and guides you to approve the device via the emailed link or the Bitwarden app, then re-checks.
 - **Searchable item list** — type to filter, arrow keys / `j` `k` to move, Enter to open.
 - **Item detail** — reveal password (`p`), copy username (`c`), copy password (`y`) via `wl-copy`.
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine.
