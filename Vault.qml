@@ -307,6 +307,22 @@ Item {
     return Math.max(0, Math.min(i, root.filteredItems.length - 1))
   }
 
+  // Live introspection for debugging: `omarchy-shell shell call <id> state`
+  function state() {
+    return JSON.stringify({
+      opened: root.opened,
+      screen: root.screen,
+      status: root.status,
+      loading: root.loading,
+      heldSession: root.heldSession ? "yes" : "no",
+      emailNeeded: root.emailNeeded,
+      error: root.error,
+      items: root.items.length,
+      filtered: root.filteredItems.length,
+      selectedIndex: root.selectedIndex
+    })
+  }
+
   function itemTypeGlyph(type) {
     switch (type) {
     case "login": return "󰍤"
@@ -326,10 +342,7 @@ Item {
       id: sessionLookupOut
       waitForEnd: true
     }
-    onExited: function(exitCode) {
-      console.log("[bw-vault] sessionLookup exited", exitCode, "text=", JSON.stringify(sessionLookupOut.text))
-      root.onSessionLookup(sessionLookupOut.text)
-    }
+    onExited: root.onSessionLookup(sessionLookupOut.text)
   }
 
   Process {
@@ -358,7 +371,6 @@ Item {
     }
     onExited: function(exitCode) {
       if (!root.opened) return
-      console.log("[bw-vault] statusProc exited", exitCode, "hadSession=", statusProc.hadSession, "text=", JSON.stringify(statusOut.text))
       root.onStatusOutput(statusOut.text, statusProc.hadSession)
     }
   }
