@@ -15,8 +15,10 @@ import "VaultModel.js" as VaultModel
 // with copy-username / copy-password / reveal / lock.
 //
 // Session handling mirrors bw-tui: the session token is read from the OS
-// keyring (secret-tool) on open, verified against `bw`, and re-stored after
-// unlock so the master password is asked for once per machine. The personal
+// keyring (secret-tool) on open and re-stored after unlock, so the master
+// password is asked for once per machine. It is not verified with a separate
+// `bw status` call — the item list is fetched with it straight away, and the
+// list failing is what says the session has expired. The personal
 // API key (client_id / client_secret) is stored the same way after the first
 // login, so it is pasted from the browser exactly once. The master password
 // only ever travels through the child process environment (bw --passwordenv),
@@ -165,8 +167,15 @@ Item {
 
   // -- status chain ----------------------------------------------------------
 
-  // After the keyring lookup lands, verify a held session, then fall back to
-  // the global bw status when there isn't one worth keeping.
+  // After the keyring lookup lands, put the held session straight to work.
+  //
+  // Every `bw` call is a Node cold start, so the old "verify with `bw status`,
+  // then list" chain paid for two of them before showing anything (and three
+  // when the session had expired, since the failed check ran status a second
+  // time without a session). Listing optimistically collapses that: a good
+  // session goes straight to items, and a dead one is diagnosed by the list
+  // failing — see listProc, which falls back to fetchGlobalStatus() rather than
+  // surfacing an error.
   function onSessionLookup(rawSession) {
     if (root.sessionLookupHandled) return
     root.sessionLookupHandled = true
@@ -174,9 +183,7 @@ Item {
     if (candidate) {
       root.heldSession = candidate
       root.status = "checking"
-      statusProc.hadSession = true
-      statusProc.command = VaultModel.statusCommand(candidate)
-      statusProc.running = true
+      root.loadItems(true)
       return
     }
     root.heldSession = ""
@@ -185,7 +192,6 @@ Item {
 
   function fetchGlobalStatus() {
     root.status = "checking"
-    statusProc.hadSession = false
     statusProc.command = VaultModel.statusCommand("")
     statusProc.running = true
   }
@@ -205,7 +211,7 @@ Item {
     root.focusUnlock()
   }
 
-  function onStatusOutput(raw, hadSession) {
+  function onStatusOutput(raw) {
     var st = VaultModel.parseStatus(raw)
     if (!st) {
       root.error = "Could not read bw status"
@@ -219,12 +225,8 @@ Item {
       root.loadItems()
       return
     }
-    // Held session is dead (or absent) and bw is not globally unlocked.
-    if (hadSession) {
-      root.heldSession = ""
-      root.fetchGlobalStatus()
-      return
-    }
+    // Not unlocked. statusProc only ever runs without a session now, so this is
+    // the final word — there is nothing left to fall back to.
     root.status = st.authenticated ? "locked" : "unauthenticated"
     if (root.apiKeyNeeded) root.centerFloat()
     root.loading = false
@@ -294,8 +296,12 @@ Item {
 
   // -- list ------------------------------------------------------------------
 
-  function loadItems() {
-    root.screen = "list"
+  // speculative: the session came straight from the keyring and has not been
+  // verified. Stay on the checking screen until items actually land, so a dead
+  // session doesn't flash an empty list on the way back to the unlock prompt.
+  function loadItems(speculative) {
+    listProc.speculative = speculative === true
+    if (!listProc.speculative) root.screen = "list"
     root.loading = true
     root.error = ""
     listProc.command = VaultModel.listCommand(root.heldSession)
@@ -303,12 +309,24 @@ Item {
   }
 
   function onListOutput(raw) {
+    // Items came back, so the session is good — this is what replaces the
+    // `bw status` check on the speculative path.
+    root.status = "unlocked"
+    root.screen = "list"
     root.items = VaultModel.parseList(raw)
     root.rebuildFilter()
     root.loading = false
     Qt.callLater(function() {
       if (root.opened) keyCatcher.forceActiveFocus()
     })
+  }
+
+  // Apply a pending debounced rebuild right now. Selection and Enter must act on
+  // what the user actually typed, not on the last coalesced frame.
+  function flushFilter() {
+    if (!filterTimer.running) return
+    filterTimer.stop()
+    root.rebuildFilter()
   }
 
   function rebuildFilter() {
@@ -552,7 +570,7 @@ Item {
 
   Process {
     id: statusProc
-    property bool hadSession: false
+    environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
       id: statusOut
       waitForEnd: true
@@ -562,7 +580,7 @@ Item {
     }
     onExited: function(exitCode) {
       if (!root.opened) return
-      root.onStatusOutput(statusOut.text, statusProc.hadSession)
+      root.onStatusOutput(statusOut.text)
     }
   }
 
@@ -630,27 +648,41 @@ Item {
 
   Process {
     id: listProc
+    // Set by loadItems(): a speculative run uses an unverified keyring session,
+    // so a failure means "that session is dead", not "show the user an error".
+    property bool speculative: false
+    // Without this a dead session makes bw prompt for the master password
+    // instead of exiting non-zero, and the speculative run never resolves.
+    environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
+      id: listOut
       waitForEnd: true
-      onStreamFinished: root.onListOutput(text)
     }
     stderr: StdioCollector {
+      id: listErr
       waitForEnd: true
-      onStreamFinished: if (text && root.opened) {
-        root.error = String(text).trim()
-        root.loading = false
-      }
     }
+    // Decided here rather than on stream-finish because only the exit code can
+    // tell a dead session from an empty vault.
     onExited: function(exitCode) {
-      if (exitCode !== 0 && root.loading && root.opened && root.error === "") {
-        root.error = "Could not list items"
+      if (!root.opened) return
+      if (exitCode !== 0) {
+        if (listProc.speculative) {
+          root.heldSession = ""
+          root.fetchGlobalStatus()
+          return
+        }
+        root.error = String(listErr.text || "").trim() || "Could not list items"
         root.loading = false
+        return
       }
+      root.onListOutput(listOut.text)
     }
   }
 
   Process {
     id: getProc
+    environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onDetailOutput(text)
@@ -672,6 +704,7 @@ Item {
 
   Process {
     id: lockProc
+    environment: VaultModel.nonInteractiveEnvironment()
   }
 
   Process {
@@ -716,6 +749,16 @@ Item {
     id: clipboardClearTimer
     interval: 20000
     onTriggered: root.requestClipboardClear()
+  }
+
+  // Coalesce fast typing. Assigning a new array to the ListView model is a full
+  // delegate reset plus a reposition, so one rebuild per burst beats one per
+  // keystroke. The search line is bound to filterText and still updates on every
+  // character, so typing itself stays responsive.
+  Timer {
+    id: filterTimer
+    interval: 60
+    onTriggered: root.rebuildFilter()
   }
 
   // -- overlay window --------------------------------------------------------
@@ -769,7 +812,7 @@ Item {
         Keys.onPressed: function(event) {
           if (event.key === Qt.Key_Escape) {
             if (root.screen === "list" && root.filterText) {
-              root.filterText = ""; root.rebuildFilter()
+              root.filterText = ""; filterTimer.stop(); root.rebuildFilter()
             } else if (root.screen === "detail") {
               root.screen = "list"; root.detail = null; root.detailPassword = ""; root.showPass = false
             } else {
@@ -783,12 +826,15 @@ Item {
 
           if (root.screen === "list") {
             if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+              root.flushFilter()
               if (root.filteredItems.length > 0) root.openDetail(root.filteredItems[root.selectedIndex].id)
               event.accepted = true
             } else if (event.key === Qt.Key_Down || event.text === "j") {
+              root.flushFilter()
               root.selectedIndex = root.clampIndex(root.selectedIndex + 1)
               event.accepted = true
             } else if (event.key === Qt.Key_Up || event.text === "k") {
+              root.flushFilter()
               root.selectedIndex = root.clampIndex(root.selectedIndex - 1)
               event.accepted = true
             } else if (event.text === "l") {
@@ -796,11 +842,11 @@ Item {
               event.accepted = true
             } else if (Util.editsFilter(event, root.filterText)) {
               root.filterText = Util.editedFilter(event, root.filterText)
-              root.rebuildFilter()
+              filterTimer.restart()
               event.accepted = true
             } else if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
               root.filterText = root.filterText + event.text
-              root.rebuildFilter()
+              filterTimer.restart()
               event.accepted = true
             }
           } else if (root.screen === "detail") {
