@@ -99,10 +99,14 @@ function statusCommand(session) {
 // environment (bw reads BW_CLIENTID/BW_CLIENTSECRET), never argv. This is
 // fully non-interactive and bypasses both 2FA and new-device verification.
 function apikeyLoginCommand() {
-  // --passwordenv tells bw to read the master password from BW_VAULT_MASTER_PASSWORD
-  // (set in apikeyLoginEnvironment) instead of prompting. Without it, login ignores
-  // that env var and fails on a fresh machine (it only worked where bw was already
-  // authenticated, because then it short-circuits with "already logged in").
+  // --passwordenv points bw at BW_VAULT_MASTER_PASSWORD (set in
+  // apikeyLoginEnvironment) rather than a TTY prompt, so login can never block
+  // waiting on one. Note that on the --apikey path the login authenticates from
+  // BW_CLIENTID / BW_CLIENTSECRET and leaves the vault locked; the master password
+  // is normally consumed by the `bw unlock` that runUnlock() fires straight after.
+  // UNVERIFIED: this flag has not been reproduced as the fix for fresh-machine
+  // login against an empty BITWARDENCLI_APPDATA_DIR — do not read this comment as
+  // documenting that cause.
   return buildCommand(["login", "--apikey", "--passwordenv", PASSWORD_ENV], "", false)
 }
 

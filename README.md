@@ -43,7 +43,7 @@ The overlay keeps the personal API key in the OS keyring (the same Secret Servic
 - Omarchy (Quickshell-based shell)
 - A `wlr-layer-shell`-compatible Wayland compositor (Omarchy's Hyprland, Sway, etc.) — not X11
 - [Bitwarden CLI](https://bitwarden.com/help/bitwarden-cli/) (`bw`)
-- `wl-clipboard` (`wl-copy`)
+- `wl-clipboard` (`wl-copy`, `wl-paste`)
 - `libsecret` (`secret-tool`) — session and API key persistence
 
 ```sh
