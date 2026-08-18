@@ -391,9 +391,9 @@ Item {
   function onClipboardRead(raw, exitCode) {
     var digest = root.clipboardDigest
     root.clipboardDigest = ""
-    // Non-zero exit means the clipboard is empty — nothing of ours left to clear.
     if (exitCode !== 0 || !digest) return
-    if (Qt.md5(String(raw)) !== digest) return
+    // md5sum prints "<32 hex>  -"; only the digest ever reaches this process.
+    if (String(raw).slice(0, 32) !== digest) return
     clipboardClear.running = true
   }
 
@@ -690,11 +690,13 @@ Item {
 
   // Reads the clipboard back so the wipe can confirm it still holds our value.
   // `wl-paste` ships in the same wl-clipboard package as `wl-copy`, so this adds
-  // no new dependency. It exits non-zero when the clipboard is empty, which we
-  // treat as "nothing of ours left to clear".
+  // no new dependency. The output is hashed in the pipeline rather than in QML:
+  // a StdioCollector's text is read-only, so collecting the raw clipboard would
+  // leave the plaintext password parked in the (keepLoaded) shell process — the
+  // exact retention this overlay is trying to avoid. Only the digest crosses over.
   Process {
     id: clipboardRead
-    command: ["wl-paste", "--no-newline"]
+    command: ["sh", "-c", "wl-paste --no-newline | md5sum"]
     stdout: StdioCollector {
       id: clipboardReadOut
       waitForEnd: true
