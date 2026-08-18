@@ -89,8 +89,10 @@ function apiKeySecretStoreCommand() {
 
 // -- Commands ----------------------------------------------------------------
 
-// statusCommand(session) — true status; a bogus session just reports
-// unauthenticated, which is exactly what an expired token should mean.
+// statusCommand(session) — where bw stands globally. Only ever called with an
+// empty session now: a held session is tested by using it (see loadItems), so
+// status is the fallback that classifies locked vs unauthenticated. The session
+// parameter is kept because buildCommand takes one.
 function statusCommand(session) {
   return buildCommand(["status"], session, true)
 }
@@ -178,10 +180,15 @@ function parseList(raw) {
         if (u && u.uri) uris.push(u.uri)
       }
     }
+    var name = String(it.name || "")
+    var username = String(login.username || "")
     out.push({
       id: String(it.id || ""),
-      name: String(it.name || ""),
-      username: String(login.username || ""),
+      name: name,
+      username: username,
+      // Folded once here so matchesQuery doesn't lowercase both fields for every
+      // item on every keystroke.
+      searchKey: (name + " " + username).toLowerCase(),
       type: itemTypeName(it.type),
       notes: String(it.notes || ""),
       uris: uris
@@ -214,9 +221,10 @@ function parseItem(raw) {
   }
 }
 
+// `query` must already be lowercased and trimmed — rebuildFilter() normalizes it
+// once per keystroke instead of once per item. Items come from parseList(), so
+// searchKey is always present.
 function matchesQuery(item, query) {
-  var q = String(query || "").toLowerCase().trim()
-  if (!q) return true
-  return String(item.name).toLowerCase().indexOf(q) !== -1
-    || String(item.username).toLowerCase().indexOf(q) !== -1
+  if (!query) return true
+  return item.searchKey.indexOf(query) !== -1
 }
