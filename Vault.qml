@@ -122,11 +122,25 @@ Item {
     root.loading = false
     root.authPhase = ""
     root.masterPassword = ""
+    root.clientSecret = ""
+    root.heldSession = ""
     root.detailPassword = ""
     root.showPass = false
+    clipboardClear.running = true
   }
 
   function dismiss() {
+    // Drop every in-memory secret the moment the overlay is dismissed. The
+    // session and API key are re-read from the OS keyring on the next open(),
+    // so nothing sensitive needs to survive in the (keepLoaded) shell process.
+    // The clipboard is wiped too so a copied password can't linger.
+    root.masterPassword = ""
+    root.clientSecret = ""
+    root.heldSession = ""
+    root.detailPassword = ""
+    root.showPass = false
+    clipboardClear.running = true
+    root.opened = false
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide((root.manifest && root.manifest.id) || "com.aktivesolutions.bw-vault")
     else close()
@@ -251,7 +265,9 @@ Item {
     }
     root.heldSession = session
     root.status = "unlocked"
-    // Mirror to the OS keyring (non-fatal).
+    // Mirror to the OS keyring (non-fatal). Re-open stdin so the previous run's
+    // EOF doesn't leave the write channel closed for this run.
+    sessionStore.stdinEnabled = true
     sessionStore.running = true
     root.loadItems()
   }
@@ -315,6 +331,7 @@ Item {
       lockProc.running = true
     }
     sessionClear.running = true
+    clipboardClear.running = true
     root.heldSession = ""
     root.detail = null
     root.detailPassword = ""
@@ -331,8 +348,12 @@ Item {
 
   function copyText(text) {
     if (!text) return
+    copyProc.stdinEnabled = true
     copyProc.payload = text
     copyProc.running = true
+    // Auto-wipe the clipboard shortly after a copy so a password can't sit on
+    // it indefinitely (mirrors the official Bitwarden apps).
+    clipboardClearTimer.restart()
   }
 
   function flashMessage(message) {
@@ -427,6 +448,10 @@ Item {
     stdinEnabled: true
     onStarted: {
       write(String(root.heldSession || "") + "\n")
+      // Close stdin so secret-tool sees EOF, stores the secret, and exits.
+      // Quickshell's Process never closes the write channel on its own, so
+      // without this the store would block forever and never persist.
+      stdinEnabled = false
     }
   }
 
@@ -461,6 +486,7 @@ Item {
     stdinEnabled: true
     onStarted: {
       write(String(root.clientId || "") + "\n")
+      stdinEnabled = false
     }
   }
 
@@ -470,6 +496,7 @@ Item {
     stdinEnabled: true
     onStarted: {
       write(String(root.clientSecret || "") + "\n")
+      stdinEnabled = false
     }
   }
 
@@ -507,7 +534,9 @@ Item {
         root.error = ""
         // Persist the working API key to the keyring (non-fatal) so the next
         // open pre-fills it and only the master password is needed.
+        apiKeyIdStore.stdinEnabled = true
         apiKeyIdStore.running = true
+        apiKeySecretStore.stdinEnabled = true
         apiKeySecretStore.running = true
         root.runUnlock()
         return
@@ -601,7 +630,23 @@ Item {
     onStarted: {
       write(payload)
       payload = ""
+      // Close stdin so wl-copy sees EOF, copies, and exits. Otherwise the
+      // process leaks and keeps the clipboard source pipe open.
+      stdinEnabled = false
     }
+  }
+
+  // Wipes the clipboard after a copy so a password can't linger. Triggered by a
+  // restarting Timer on every copy, and directly on lock/dismiss/close.
+  Process {
+    id: clipboardClear
+    command: ["wl-copy", "--clear"]
+  }
+
+  Timer {
+    id: clipboardClearTimer
+    interval: 20000
+    onTriggered: clipboardClear.running = true
   }
 
   // -- overlay window --------------------------------------------------------

@@ -99,7 +99,11 @@ function statusCommand(session) {
 // environment (bw reads BW_CLIENTID/BW_CLIENTSECRET), never argv. This is
 // fully non-interactive and bypasses both 2FA and new-device verification.
 function apikeyLoginCommand() {
-  return buildCommand(["login", "--apikey"], "", false)
+  // --passwordenv tells bw to read the master password from BW_VAULT_MASTER_PASSWORD
+  // (set in apikeyLoginEnvironment) instead of prompting. Without it, login ignores
+  // that env var and fails on a fresh machine (it only worked where bw was already
+  // authenticated, because then it short-circuits with "already logged in").
+  return buildCommand(["login", "--apikey", "--passwordenv", PASSWORD_ENV], "", false)
 }
 
 // Environment for login: client id/secret + master password off argv, and
