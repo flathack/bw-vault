@@ -33,11 +33,25 @@ function buildCommand(args, session, useSession) {
   return full
 }
 
+// Every `bw` child runs headless, so no invocation may ever wait on a prompt.
+// This matters most for reads: with an expired --session, `bw list items` falls
+// back to asking for the master password on the TTY, and a Quickshell child has
+// no TTY — so without this it hangs or fails opaquely instead of exiting
+// non-zero the way loadItems()'s speculative path needs it to.
+//
+// Quickshell merges `environment` into the inherited one rather than replacing
+// it, so PATH / HOME / XDG_* still reach the child.
+function nonInteractiveEnvironment() {
+  var env = ({})
+  env.BW_NOINTERACTION = "true"
+  return env
+}
+
 // Process `environment` map. The master password travels through the child's
 // environment (bw --passwordenv) instead of argv, so it never shows up in
 // process listings or shell history.
 function passwordEnvironment(password) {
-  var env = ({})
+  var env = nonInteractiveEnvironment()
   env[PASSWORD_ENV] = String(password || "")
   return env
 }
@@ -118,7 +132,6 @@ function apikeyLoginEnvironment(clientId, clientSecret, password) {
   var env = passwordEnvironment(password)
   env.BW_CLIENTID = String(clientId || "")
   env.BW_CLIENTSECRET = String(clientSecret || "")
-  env.BW_NOINTERACTION = "true"
   return env
 }
 

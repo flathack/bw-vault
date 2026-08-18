@@ -570,6 +570,7 @@ Item {
 
   Process {
     id: statusProc
+    environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
       id: statusOut
       waitForEnd: true
@@ -650,6 +651,9 @@ Item {
     // Set by loadItems(): a speculative run uses an unverified keyring session,
     // so a failure means "that session is dead", not "show the user an error".
     property bool speculative: false
+    // Without this a dead session makes bw prompt for the master password
+    // instead of exiting non-zero, and the speculative run never resolves.
+    environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
       id: listOut
       waitForEnd: true
@@ -678,6 +682,7 @@ Item {
 
   Process {
     id: getProc
+    environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.onDetailOutput(text)
@@ -699,6 +704,7 @@ Item {
 
   Process {
     id: lockProc
+    environment: VaultModel.nonInteractiveEnvironment()
   }
 
   Process {
