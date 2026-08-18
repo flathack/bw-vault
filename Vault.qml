@@ -50,6 +50,10 @@ Item {
   property var detail: null
   property string detailPassword: ""
   property bool showPass: false
+  // md5 of whatever this overlay last put on the clipboard. A digest, not the
+  // plaintext, so the value isn't retained — enough to tell our clipboard entry
+  // apart from anything the user copied since.
+  property string clipboardDigest: ""
 
   // "idle" | "login" | "unlock" — which auth step is in flight
   property string authPhase: "idle"
@@ -117,16 +121,43 @@ Item {
     })
   }
 
+  // Drop every in-memory secret. The session and API key are re-read from the
+  // OS keyring on the next open(), so nothing sensitive needs to survive in the
+  // (keepLoaded) shell process.
+  //
+  // Clearing the text fields is what actually zeroes masterPassword /
+  // clientSecret: the properties are bound one-way off the fields'
+  // onTextChanged, so assigning the property alone leaves the secret sitting in
+  // the field. clientIdField is left alone — a client id isn't a secret.
+  //
+  // The clipboard is deliberately NOT wiped here. The overlay takes exclusive
+  // keyboard focus, so dismissing it is the only way to reach another window and
+  // paste; wiping on dismiss would make copying useless. clipboardClearTimer
+  // handles the wipe 20s after the copy instead.
+  function clearSecrets() {
+    passField.text = ""
+    clientSecretField.text = ""
+    root.masterPassword = ""
+    root.clientSecret = ""
+    root.heldSession = ""
+    root.detailPassword = ""
+    root.detail = null
+    root.items = []
+    root.filteredItems = []
+    root.selectedIndex = 0
+    root.showPass = false
+  }
+
   function close() {
     root.opened = false
     root.loading = false
     root.authPhase = ""
-    root.masterPassword = ""
-    root.detailPassword = ""
-    root.showPass = false
+    root.clearSecrets()
   }
 
   function dismiss() {
+    root.opened = false
+    root.clearSecrets()
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide((root.manifest && root.manifest.id) || "com.aktivesolutions.bw-vault")
     else close()
@@ -251,7 +282,12 @@ Item {
     }
     root.heldSession = session
     root.status = "unlocked"
-    // Mirror to the OS keyring (non-fatal).
+    // Mirror to the OS keyring (non-fatal). Snapshot the token onto the Process
+    // now — the child starts asynchronously, and onStarted reading root.heldSession
+    // would write an empty session if a dismiss landed in between. Re-open stdin so
+    // the previous run's EOF doesn't leave the write channel closed for this run.
+    sessionStore.payload = session
+    sessionStore.stdinEnabled = true
     sessionStore.running = true
     root.loadItems()
   }
@@ -315,6 +351,7 @@ Item {
       lockProc.running = true
     }
     sessionClear.running = true
+    root.requestClipboardClear()
     root.heldSession = ""
     root.detail = null
     root.detailPassword = ""
@@ -331,8 +368,33 @@ Item {
 
   function copyText(text) {
     if (!text) return
+    copyProc.stdinEnabled = true
     copyProc.payload = text
     copyProc.running = true
+    // Remember what we put there so the auto-wipe can recognise it later.
+    root.clipboardDigest = Qt.md5(text)
+    // Auto-wipe the clipboard shortly after a copy so a password can't sit on
+    // it indefinitely (mirrors the official Bitwarden apps).
+    clipboardClearTimer.restart()
+  }
+
+  // Wipe the clipboard, but only if it still holds the value this overlay put
+  // there. `wl-copy --clear` is unconditional, so firing it blind would destroy
+  // whatever the user copied in the meantime — or, when the vault never copied
+  // anything this session, content the vault never owned.
+  function requestClipboardClear() {
+    clipboardClearTimer.stop()
+    if (!root.clipboardDigest) return
+    clipboardRead.running = true
+  }
+
+  function onClipboardRead(raw, exitCode) {
+    var digest = root.clipboardDigest
+    root.clipboardDigest = ""
+    if (exitCode !== 0 || !digest) return
+    // md5sum prints "<32 hex>  -"; only the digest ever reaches this process.
+    if (String(raw).slice(0, 32) !== digest) return
+    clipboardClear.running = true
   }
 
   function flashMessage(message) {
@@ -423,10 +485,17 @@ Item {
 
   Process {
     id: sessionStore
+    // Snapshotted by the caller before running; see onUnlockSuccess.
+    property string payload: ""
     command: VaultModel.sessionStoreCommand()
     stdinEnabled: true
     onStarted: {
-      write(String(root.heldSession || "") + "\n")
+      write(payload + "\n")
+      payload = ""
+      // Close stdin so secret-tool sees EOF, stores the secret, and exits.
+      // Quickshell's Process never closes the write channel on its own, so
+      // without this the store would block forever and never persist.
+      stdinEnabled = false
     }
   }
 
@@ -457,19 +526,27 @@ Item {
 
   Process {
     id: apiKeyIdStore
+    // Snapshotted by the caller before running, so a dismiss racing the
+    // asynchronous start can't blank the keyring entry.
+    property string payload: ""
     command: VaultModel.apiKeyIdStoreCommand()
     stdinEnabled: true
     onStarted: {
-      write(String(root.clientId || "") + "\n")
+      write(payload + "\n")
+      payload = ""
+      stdinEnabled = false
     }
   }
 
   Process {
     id: apiKeySecretStore
+    property string payload: ""
     command: VaultModel.apiKeySecretStoreCommand()
     stdinEnabled: true
     onStarted: {
-      write(String(root.clientSecret || "") + "\n")
+      write(payload + "\n")
+      payload = ""
+      stdinEnabled = false
     }
   }
 
@@ -507,7 +584,11 @@ Item {
         root.error = ""
         // Persist the working API key to the keyring (non-fatal) so the next
         // open pre-fills it and only the master password is needed.
+        apiKeyIdStore.payload = String(root.clientId || "")
+        apiKeyIdStore.stdinEnabled = true
         apiKeyIdStore.running = true
+        apiKeySecretStore.payload = String(root.clientSecret || "")
+        apiKeySecretStore.stdinEnabled = true
         apiKeySecretStore.running = true
         root.runUnlock()
         return
@@ -528,7 +609,7 @@ Item {
     id: unlockProc
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.onUnlockSuccess(text)
+      onStreamFinished: if (root.opened) root.onUnlockSuccess(text)
     }
     stderr: StdioCollector {
       waitForEnd: true
@@ -601,7 +682,40 @@ Item {
     onStarted: {
       write(payload)
       payload = ""
+      // Close stdin so wl-copy sees EOF, copies, and exits. Otherwise the
+      // process leaks and keeps the clipboard source pipe open.
+      stdinEnabled = false
     }
+  }
+
+  // Reads the clipboard back so the wipe can confirm it still holds our value.
+  // `wl-paste` ships in the same wl-clipboard package as `wl-copy`, so this adds
+  // no new dependency. The output is hashed in the pipeline rather than in QML:
+  // a StdioCollector's text is read-only, so collecting the raw clipboard would
+  // leave the plaintext password parked in the (keepLoaded) shell process — the
+  // exact retention this overlay is trying to avoid. Only the digest crosses over.
+  Process {
+    id: clipboardRead
+    command: ["sh", "-c", "wl-paste --no-newline | md5sum"]
+    stdout: StdioCollector {
+      id: clipboardReadOut
+      waitForEnd: true
+    }
+    onExited: function(exitCode) { root.onClipboardRead(clipboardReadOut.text, exitCode) }
+  }
+
+  // Wipes the clipboard after a copy so a password can't linger. Only ever
+  // reached through requestClipboardClear(), which first checks the clipboard is
+  // still ours — never fired blind, and never on dismiss/close.
+  Process {
+    id: clipboardClear
+    command: ["wl-copy", "--clear"]
+  }
+
+  Timer {
+    id: clipboardClearTimer
+    interval: 20000
+    onTriggered: root.requestClipboardClear()
   }
 
   // -- overlay window --------------------------------------------------------
