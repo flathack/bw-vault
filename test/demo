@@ -6,7 +6,9 @@
 # network: PATH is prefixed with test/fixtures, whose `bw` and `secret-tool`
 # stubs answer from test/demo-vault.json and a temp directory.
 #
-# Usage: test/demo [--unlocked]
+# Usage: test/demo [--locked | --unlocked]
+#   --locked    start set up but locked, so the dropdown asks for a master
+#               password (the fixture accepts any non-empty one)
 #   --unlocked  start with the fixture vault already unlocked, so the dropdown
 #               opens straight onto the item list
 set -euo pipefail
@@ -20,13 +22,23 @@ work=$(mktemp -d -t bw-vault-demo-XXXXXX)
 state=$(mktemp -d -t bw-vault-fixture-XXXXXX)
 trap 'rm -rf "$work" "$state"' EXIT
 
-if [[ ${1:-} == --unlocked ]]; then
+seed_api_key() {
   mkdir -p "$state/keyring"
-  touch "$state/authed" "$state/unlocked"
-  printf 'demo-session-token-not-real' > "$state/keyring/service_com.aktivesolutions.bw-vault_account_bw-session_"
   printf 'demo-client-id' > "$state/keyring/service_com.aktivesolutions.bw-vault_account_bw-client-id_"
   printf 'demo-client-secret' > "$state/keyring/service_com.aktivesolutions.bw-vault_account_bw-client-secret_"
-fi
+}
+
+case "${1:-}" in
+--locked)
+  seed_api_key
+  touch "$state/authed"
+  ;;
+--unlocked)
+  seed_api_key
+  touch "$state/authed" "$state/unlocked"
+  printf 'demo-session-token-not-real' > "$state/keyring/service_com.aktivesolutions.bw-vault_account_bw-session_"
+  ;;
+esac
 
 # The plugin folder itself must stay symlink-free (omarchy plugin validate
 # rejects symlinks anywhere inside it), so the demo config is assembled out of

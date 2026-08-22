@@ -90,6 +90,20 @@ ShellRoot {
           widget.open()
           widget.rebuild()
           if (parts[0] === "detail") detailTimer.restart()
+          else if (parts[0] === "unlock") unlockTimer.restart()
+        }
+      }
+
+      // Exercises the real unlock chain — submitUnlock -> unlockWithStored ->
+      // bw unlock -> session stored -> list — without a keyboard. The fixture
+      // accepts any non-empty password.
+      Timer {
+        id: unlockTimer
+        interval: 500
+        repeat: false
+        onTriggered: {
+          widget.masterPassword = "demo-master-password"
+          widget.submitUnlock()
         }
       }
 

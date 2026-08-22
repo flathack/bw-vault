@@ -56,6 +56,14 @@ Panel {
   readonly property bool unlocked: root.svc ? root.svc.unlocked : false
   readonly property bool itemsLoaded: root.svc ? root.svc.itemsLoaded : false
   readonly property bool busy: root.svc ? root.svc.busy : false
+  // `busy` covers any bw child, including the ~5s list that runs when the
+  // panel opens. `unlocking` is only the login/unlock pair. The unlock form
+  // must gate on the latter: gating on `busy` disables the password field for
+  // the first five seconds it is on screen, so the opening characters of
+  // whatever you type are dropped and the truncated rest is submitted — which
+  // bw reports as a decryption failure, not as a short password.
+  readonly property string authPhase: root.svc ? root.svc.authPhase : ""
+  readonly property bool unlocking: root.authPhase !== ""
   readonly property bool apiKeyStored: root.svc ? root.svc.apiKeyStored : false
   readonly property var items: root.svc ? root.svc.items : []
   readonly property string serviceError: root.svc ? root.svc.error : ""
@@ -161,7 +169,7 @@ Panel {
   // -- unlock ----------------------------------------------------------------
 
   function submitUnlock() {
-    if (root.busy) return
+    if (root.unlocking) return
     if (!root.apiKeyStored && root.status === "unauthenticated") {
       root.say("Run bw-vault-setup in a terminal first", true)
       return
@@ -555,7 +563,7 @@ Panel {
             foreground: root.foreground
             placeholderText: "Master password"
             password: true
-            enabled: !root.busy
+            enabled: !root.unlocking
             onTextChanged: root.masterPassword = text
             onAccepted: root.submitUnlock()
             Keys.onEscapePressed: root.close()
@@ -565,14 +573,12 @@ Panel {
             width: parent.width
             // No password field on screen means no key to press — saying
             // "enter to unlock" under a form that isn't there is just noise.
-            visible: passField.visible || root.busy || root.serviceError !== "" || root.status === "checking"
-            text: root.busy
-              ? "Unlocking…"
+            visible: passField.visible || root.unlocking || root.serviceError !== ""
+            text: root.unlocking
+              ? (root.authPhase === "login" ? "Authenticating…" : "Unlocking…")
               : root.serviceError !== ""
                 ? root.serviceError
-                : root.status === "checking"
-                  ? "Checking the vault session…"
-                  : "Enter to unlock"
+                : "Enter to unlock"
             color: root.serviceError !== "" ? Color.urgent : root.fainter
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
