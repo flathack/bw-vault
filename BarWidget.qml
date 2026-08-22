@@ -29,10 +29,18 @@ Panel {
   // Its own IPC target, so it can carry a keybinding:
   //   omarchy-shell bw-vault-bar toggle
   //   omarchy-shell bw-vault-bar search github
-  // Panel's built-in handler is turned off so `search` can join open/close/
-  // toggle on one target.
-  ipcTarget: "bw-vault-bar"
-  manageIpc: false
+  //
+  // `ipcTarget` is left unset on purpose: setting it makes Panel declare a
+  // second handler for the same name, and the two then split the method list
+  // between them — `open` and `toggle` stopped being visible to
+  // `qs ipc show`, which is a bad surprise for anyone binding a key to them.
+  // The handler below owns the name outright.
+  //
+  // The shell still logs "Handler was registered but will not be used" for
+  // this target. That is not this: it logs the same line for omarchy.audio,
+  // omarchy.bluetooth and every other panel-backed bar widget, because it
+  // instantiates them more than once. The surviving handler is this one.
+  readonly property string ipcName: "bw-vault-bar"
 
   readonly property var svc: (root.bar && root.bar.shell) ? root.bar.shell.serviceFor(moduleName) : null
 
@@ -346,7 +354,7 @@ Panel {
   // reads, fetches or copies a secret — a password still costs a keystroke on a
   // panel someone is looking at, which is the only place that decision belongs.
   IpcHandler {
-    target: root.ipcTarget
+    target: root.ipcName
 
     function open(): void { root.open() }
     function close(): void { root.close() }
