@@ -1,0 +1,46 @@
+#!/bin/bash
+# Stand-in for the Bitwarden CLI, for screenshots and manual testing.
+#
+# Prints canned JSON from test/demo-vault.json and never touches a real vault,
+# a real account, or the network. Paired with the `secret-tool` stub next to it,
+# which keeps its keyring in a temp directory — between them, running the plugin
+# against this fixture cannot reach or overwrite anything real.
+set -uo pipefail
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+vault="$here/../demo-vault.json"
+state="${BW_FIXTURE_STATE:-${XDG_RUNTIME_DIR:-/tmp}/bw-vault-fixture}"
+mkdir -p "$state"
+
+# A believable stall, so screenshots and timings reflect what a real cold start
+# feels like rather than an instant that never happens in practice.
+delay=${BW_FIXTURE_DELAY:-0.4}
+
+case "${1:-}" in
+status)
+  sleep "$delay"
+  if [[ -f $state/unlocked ]]; then s=unlocked
+  elif [[ -f $state/authed ]]; then s=locked
+  else s=unauthenticated; fi
+  printf '{"serverUrl":"https://vault.example.com","lastSync":null,"status":"%s"}\n' "$s"
+  ;;
+login)
+  sleep "$delay"; touch "$state/authed"; echo "You are logged in!" ;;
+unlock)
+  sleep "$delay"
+  [[ -n ${BW_VAULT_MASTER_PASSWORD:-} ]] || { echo "Master password required." >&2; exit 1; }
+  touch "$state/authed" "$state/unlocked"
+  printf 'demo-session-token-not-real\n' ;;
+lock)
+  rm -f "$state/unlocked"; echo "Your vault is locked." ;;
+list)
+  sleep "$delay"
+  [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }
+  cat "$vault" ;;
+get)
+  sleep "$delay"
+  [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }
+  jq -e --arg id "${3:-}" 'map(select(.id == $id))[0] // empty' "$vault" ||
+    { echo "Not found." >&2; exit 1; } ;;
+*)
+  echo "bw fixture: unsupported command: ${1:-}" >&2; exit 1 ;;
+esac

@@ -5,30 +5,32 @@ import qs.Commons
 import qs.Ui
 import "VaultModel.js" as VaultModel
 
-// BW Vault in the bar — lock state at a glance, and a dropdown for the case
-// the fullscreen overlay is too much ceremony for: you want one password,
-// right now, without losing sight of the window you are pasting into.
+// BW Vault, in the bar. The whole plugin lives here now: unlock, search, copy,
+// and item detail, in a dropdown under a padlock.
 //
-// Both views share Service.qml, so this dropdown does not run its own `bw`
-// pipeline. That matters more than it sounds: `bw` is a Node program and a cold
-// start costs ~4s here. Opening the dropdown against a warm cache costs nothing
-// — the item list is already in the service. Only the password itself is
-// fetched on demand, because only the password is worth never caching.
+// There used to be a fullscreen overlay as well. It went because the dropdown
+// does the same job with less ceremony — you want one password, and you are
+// already looking at the field you will paste it into.
 //
-// The trade that makes this work: item metadata (names, usernames, URIs) now
-// outlives the panel. Passwords never do.
+// One thing did not survive that move: entering a personal API key for the
+// first time. You copy client_id and client_secret out of a browser one at a
+// time, and KeyboardPanel dismisses on any click outside it, so the trip back
+// for the second value would close the form and lose the first. The overlay
+// solved that with a floating, non-grabbing card; the dropdown solves it by not
+// doing it at all — `bw-vault-setup` stores the key from a terminal, once per
+// machine. From then on this panel only ever asks for the master password.
+//
+// Session, item metadata and every `bw` child live in Service.qml, which the
+// shell mounts once. This file holds screens, selection and focus.
 Panel {
   id: root
   moduleName: "com.aktivesolutions.bw-vault"
 
-  // The dropdown is worth its own keybinding, separate from the full vault:
+  // Its own IPC target, so it can carry a keybinding:
   //   omarchy-shell bw-vault-bar toggle
   //   omarchy-shell bw-vault-bar search github
-  // `omarchy-shell shell toggle com.aktivesolutions.bw-vault` stays pointed at
-  // the overlay, since that is the plugin's summonable surface.
-  //
-  // Panel's own handler covers open/close/toggle; this widget declares the
-  // whole surface itself so `search` can join them on the same target.
+  // Panel's built-in handler is turned off so `search` can join open/close/
+  // toggle on one target.
   ipcTarget: "bw-vault-bar"
   manageIpc: false
 
@@ -54,43 +56,80 @@ Panel {
   readonly property bool unlocked: root.svc ? root.svc.unlocked : false
   readonly property bool itemsLoaded: root.svc ? root.svc.itemsLoaded : false
   readonly property bool busy: root.svc ? root.svc.busy : false
+  readonly property bool apiKeyStored: root.svc ? root.svc.apiKeyStored : false
   readonly property var items: root.svc ? root.svc.items : []
+  readonly property string serviceError: root.svc ? root.svc.error : ""
 
   // -- view state ------------------------------------------------------------
+
+  // "unlock" | "list" | "detail"
+  property string screen: "list"
 
   property string query: ""
   property var results: []
   property int selectedIndex: 0
 
-  // The one in-flight password fetch, if any. Held as a token, never as a
-  // password: see onItemFetched, where the secret goes straight to the
-  // clipboard and out of scope.
+  // Read off the unlock field, one-way via onTextChanged — clearing the field
+  // is what actually zeroes it.
+  property string masterPassword: ""
+
+  // Whatever `bw get` is currently fetching, as a token and an intent. Never a
+  // password: see onItemFetched.
   property string pendingToken: ""
+  property string pendingIntent: ""
   property string pendingLabel: ""
   property int fetchSeq: 0
+
+  // The one open item. Holds a password for as long as the detail screen is
+  // showing it, and no longer — see leaveDetail().
+  property var detail: null
+  property string detailPassword: ""
+  property bool showPass: false
 
   property string notice: ""
   property bool noticeIsError: false
 
+  readonly property bool vertical: root.bar ? root.bar.vertical === true : false
   readonly property color foreground: root.bar ? root.bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(root.foreground, 1.45)
   readonly property color fainter: Qt.darker(root.foreground, 1.7)
 
-  // md-lock (0xF033E) locked · md-lock_open_variant (0xF0FC6) unlocked ·
+  // A padlock is the wrong mark for this. In a status bar it reads as *screen*
+  // lock, and a bar that appears to say "this machine is unlocked" is worse
+  // than no icon at all. A shield with a key says credentials instead, and the
+  // filled/outline pair carries locked-vs-unlocked without a padlock anywhere.
+  //
+  // md-shield_key (0xF0BC4) unlocked · md-shield_key_outline (0xF0BC5) locked ·
   // md-shield_off_outline (0xF099C) not logged in · md-loading (0xF0772) working
   readonly property string icon: root.status === "unauthenticated"
     ? "󰦜"
     : root.status === "checking"
       ? "󰝲"
-      : root.unlocked ? "󰿆" : "󰌾"
+      : root.unlocked ? "󰯄" : "󰯅"
 
   readonly property string statusText: root.status === "unauthenticated"
-    ? "Not logged in"
+    ? (root.apiKeyStored ? "Not logged in" : "Not set up")
     : root.status === "checking"
       ? "Checking…"
       : root.unlocked
         ? (root.itemsLoaded ? root.items.length + (root.items.length === 1 ? " item" : " items") : "Unlocked")
         : "Locked"
+
+  // -- screens ---------------------------------------------------------------
+
+  function syncScreen() {
+    root.screen = root.unlocked ? "list" : "unlock"
+  }
+
+  function leaveDetail() {
+    root.detail = null
+    root.detailPassword = ""
+    root.showPass = false
+    root.screen = "list"
+    Qt.callLater(function() {
+      if (root.opened && root.unlocked) searchField.forceActiveFocus()
+    })
+  }
 
   // -- filtering -------------------------------------------------------------
 
@@ -119,32 +158,63 @@ Panel {
     ? root.results[root.selectedIndex]
     : null
 
+  // -- unlock ----------------------------------------------------------------
+
+  function submitUnlock() {
+    if (root.busy) return
+    if (!root.apiKeyStored && root.status === "unauthenticated") {
+      root.say("Run bw-vault-setup in a terminal first", true)
+      return
+    }
+    if (!String(root.masterPassword)) {
+      root.say("Master password required", true)
+      return
+    }
+    root.notice = ""
+    if (root.svc) root.svc.unlockWithStored(root.masterPassword)
+  }
+
   // -- copying ---------------------------------------------------------------
 
   // The username is already in the cached metadata, so this is instant. Copying
-  // it is a big share of what a vault is actually used for, and worth having as
-  // its own key for that reason alone.
-  function copyUsername() {
-    var item = root.selectedItem
-    if (!item || !item.username) {
+  // it is a big share of what a vault is actually used for, and worth its own
+  // key for that reason alone.
+  function copyUsername(item) {
+    var target = item || root.selectedItem
+    if (!target || !target.username) {
       root.say("No username on this item", true)
       return
     }
-    if (root.svc) root.svc.copyValue(item.username)
-    root.say("Copied username · " + item.name, false)
+    if (root.svc) root.svc.copyValue(target.username)
+    root.say("Copied username · " + target.name, false)
   }
 
   // The password is not cached, so this costs one `bw get` — around four
-  // seconds cold. The panel stays open and says so rather than pretending the
-  // copy already happened.
-  function copyPassword() {
+  // seconds cold. The panel says it is fetching rather than pretending the copy
+  // already happened.
+  function fetchSelected(intent) {
     var item = root.selectedItem
-    if (!item) return
-    if (!root.svc) return
+    if (!item || !root.svc) return
     root.pendingToken = "bar:" + (++root.fetchSeq)
+    root.pendingIntent = intent
     root.pendingLabel = item.name
-    root.say("Fetching " + item.name + "…", false)
+    root.say(intent === "detail" ? "Opening " + item.name + "…" : "Fetching " + item.name + "…", false)
+    if (intent === "detail") {
+      root.screen = "detail"
+      root.detail = null
+      root.detailPassword = ""
+      root.showPass = false
+    }
     root.svc.fetchItem(item.id, root.pendingToken)
+  }
+
+  function copyDetailPassword() {
+    if (!root.detailPassword) {
+      root.say("No password on this item", true)
+      return
+    }
+    if (root.svc) root.svc.copyValue(root.detailPassword)
+    root.say("Copied password", false)
   }
 
   function say(message, isError) {
@@ -163,14 +233,23 @@ Panel {
   Connections {
     target: root.svc
 
-    // The password lands here, goes to the clipboard, and is not kept: `item`
-    // is a call argument that falls out of scope when this returns. The service
-    // never assigned it to anything either.
+    // The password lands here and goes no further than this widget: to the
+    // clipboard, or onto the detail screen for as long as it is showing. The
+    // service never assigned it to anything.
     function onItemFetched(token, item) {
       if (token !== root.pendingToken) return
+      var intent = root.pendingIntent
       root.pendingToken = ""
+      root.pendingIntent = ""
+
+      if (intent === "detail") {
+        root.detail = item
+        root.detailPassword = item ? item.password : ""
+        root.notice = ""
+        return
+      }
       if (!item || !item.password) {
-        root.say("No password on " + root.pendingLabel, true)
+        root.say("No password on " + root.pendingLabel + " — ctrl+enter for details", true)
         return
       }
       root.svc.copyValue(item.password)
@@ -180,13 +259,26 @@ Panel {
 
     function onItemFetchFailed(token, message) {
       if (token !== root.pendingToken) return
+      var intent = root.pendingIntent
       root.pendingToken = ""
+      root.pendingIntent = ""
+      if (intent === "detail") root.screen = "list"
       root.say(message || "Could not read item", true)
       noticeTimer.restart()
     }
 
     function onItemsRefreshed() {
-      if (root.opened) root.rebuild()
+      if (!root.opened) return
+      root.syncScreen()
+      root.rebuild()
+      Qt.callLater(function() {
+        if (root.opened && root.unlocked && root.screen === "list") searchField.forceActiveFocus()
+      })
+    }
+
+    function onUnlockSucceeded() {
+      passField.text = ""
+      root.masterPassword = ""
     }
 
     function onLockedOut(reason) {
@@ -194,7 +286,15 @@ Panel {
       root.results = []
       root.selectedIndex = 0
       root.pendingToken = ""
-      if (root.opened) root.say(reason === "expired" ? "Session expired" : "Locked", false)
+      root.pendingIntent = ""
+      root.detail = null
+      root.detailPassword = ""
+      root.showPass = false
+      root.screen = "unlock"
+      if (root.opened) {
+        root.say(reason === "expired" ? "Session expired" : "Locked", false)
+        Qt.callLater(function() { if (root.opened) passField.forceActiveFocus() })
+      }
     }
   }
 
@@ -202,27 +302,37 @@ Panel {
     if (opened) {
       root.selectedIndex = 0
       root.notice = ""
+      root.syncScreen()
       // Warm cache: this is a no-op and the list draws immediately. Cold: it
       // starts the chain, and onItemsRefreshed fills the list in.
       if (root.svc) root.svc.refresh()
       root.rebuild()
       Qt.callLater(function() {
-        if (root.opened && root.unlocked) searchField.forceActiveFocus()
+        if (!root.opened) return
+        if (root.unlocked) searchField.forceActiveFocus()
+        else if (root.status !== "checking") passField.forceActiveFocus()
       })
     } else {
-      // The field is the source of query (one-way, via onTextChanged), so
-      // clearing the property alone would leave the last search sitting in the
-      // box the next time the panel opens.
+      // The fields are the source of query / masterPassword (one-way, via
+      // onTextChanged), so clearing the properties alone would leave the last
+      // search — and the master password — sitting in the boxes.
       searchField.text = ""
+      passField.text = ""
+      root.masterPassword = ""
       root.query = ""
       root.results = []
       root.pendingToken = ""
+      root.pendingIntent = ""
+      root.detail = null
+      root.detailPassword = ""
+      root.showPass = false
       root.notice = ""
     }
   }
 
   onQueryChanged: root.rebuild()
   onItemsChanged: if (root.opened) root.rebuild()
+  onUnlockedChanged: if (root.opened) root.syncScreen()
 
   // Everything here filters metadata that is already in this process. Nothing
   // reads, fetches or copies a secret — a password still costs a keystroke on a
@@ -243,16 +353,19 @@ Panel {
       Qt.callLater(function() {
         if (root.opened && root.unlocked) {
           searchField.text = root.query
+          root.screen = "list"
           searchField.forceActiveFocus()
         }
       })
     }
 
-    // Deliberately says nothing about *which* item is selected or what was
+    // Deliberately says nothing about which item is selected or what was
     // copied — only that a fetch is or is not outstanding.
     function status(): string {
       return JSON.stringify({
         status: root.status,
+        screen: root.screen,
+        apiKeyStored: root.apiKeyStored,
         items: root.items.length,
         results: root.results.length,
         query: root.query,
@@ -261,14 +374,6 @@ Panel {
         notice: root.notice
       })
     }
-  }
-
-  function openOverlay() {
-    root.close()
-    if (root.bar && root.bar.shell && typeof root.bar.shell.summon === "function")
-      root.bar.shell.summon(root.moduleName, "{}")
-    else
-      Quickshell.execDetached(["omarchy-shell", "shell", "toggle", root.moduleName])
   }
 
   // -------------------------------------------------------------------- bar
@@ -284,14 +389,11 @@ Panel {
       bar: root.bar
       text: root.icon
       tooltipText: "BW Vault — " + root.statusText
-        + " · left: quick copy · middle: full vault"
         + (root.lockOnRightClick && root.unlocked ? " · right: lock" : "")
       slotSize: Style.bar.statusSlot
       onPressed: function(b) {
-        if (b === Qt.RightButton) {
-          if (root.lockOnRightClick && root.unlocked && root.svc) root.svc.lock()
-        } else if (b === Qt.MiddleButton) {
-          root.openOverlay()
+        if (b === Qt.RightButton && root.lockOnRightClick && root.unlocked) {
+          if (root.svc) root.svc.lock()
         } else {
           root.toggle()
         }
@@ -308,8 +410,6 @@ Panel {
     }
   }
 
-  readonly property bool vertical: root.bar ? root.bar.vertical === true : false
-
   // ------------------------------------------------------------------ panel
   KeyboardPanel {
     id: panel
@@ -317,19 +417,28 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: root.unlocked ? searchField : keyCatcher
+    focusTarget: root.screen === "detail" ? keyCatcher : (root.unlocked ? searchField : passField)
     contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      // The search field owns every key while it has the caret, which is almost
-      // always: this panel is a search box first.
-      blocked: searchField.activeFocus
+      // A focused text field owns every key. On the detail screen there is no
+      // field, so the single-letter shortcuts below are safe there and only
+      // there.
+      blocked: searchField.activeFocus || passField.activeFocus
 
-      onCloseRequested: root.close()
-      onActivateRequested: if (!root.unlocked) root.openOverlay()
+      onCloseRequested: root.screen === "detail" ? root.leaveDetail() : root.close()
+      onMoveRequested: function(dx, dy) {
+        if (root.screen === "detail" && dx < 0) root.leaveDetail()
+      }
+      onTextKey: function(t) {
+        if (root.screen !== "detail") return
+        if (t === "p" || t === "P") root.showPass = !root.showPass
+        else if (t === "c" || t === "C") root.copyUsername(root.detail)
+        else if (t === "y" || t === "Y") root.copyDetailPassword()
+      }
 
       Column {
         id: column
@@ -351,13 +460,15 @@ Panel {
             font.pixelSize: Style.font.display
           }
 
-          // md-lock (0xF033E) — lock now, same op as right-clicking the icon.
+          // md-shield_lock_outline (0xF0CCC) — same op as right-clicking the
+          // bar icon. A shield again, so nothing in this plugin draws the
+          // padlock that means screen lock elsewhere in the bar.
           PanelActionButton {
             id: lockButton
             visible: root.unlocked
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            iconText: "󰌾"
+            iconText: "󰳌"
             tooltipText: "Lock the vault"
             foreground: root.foreground
             fontFamily: Style.font.family
@@ -377,7 +488,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: "BW Vault"
+              text: root.screen === "detail" && root.detail ? root.detail.name : "BW Vault"
               color: root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.title
@@ -387,7 +498,9 @@ Panel {
 
             Text {
               width: parent.width
-              text: root.statusText.toUpperCase()
+              text: (root.screen === "detail"
+                ? (root.detail ? String(root.detail.type).toUpperCase() : "OPENING…")
+                : root.statusText.toUpperCase())
               color: root.dim
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
@@ -402,38 +515,74 @@ Panel {
           foreground: root.foreground
         }
 
-        // ---------- Locked: nothing to search ----------------------------
+        // ---------- Unlock ------------------------------------------------
         Column {
-          visible: !root.unlocked
+          visible: root.screen === "unlock"
           width: parent.width
           spacing: Style.space(10)
 
-          Text {
+          // Nothing in the keyring: there is no useful form to show, because
+          // the API key cannot be pasted in here without losing it to the
+          // first click outside the panel.
+          Column {
+            visible: !root.apiKeyStored && root.status === "unauthenticated"
             width: parent.width
-            text: root.status === "unauthenticated"
-              ? "Log in with your personal API key to use the vault."
-              : root.status === "checking"
-                ? "Checking the vault session…"
-                : "The vault is locked. Unlocking needs your master password, which only the full vault window asks for."
-            color: root.dim
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
+            spacing: Style.space(8)
+
+            Text {
+              width: parent.width
+              text: "This machine has no Bitwarden API key stored yet. Run this in a terminal, once:"
+              color: root.dim
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              text: "bw-vault-setup"
+              color: Color.accent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.body
+              font.bold: true
+            }
           }
 
-          Button {
-            visible: root.status !== "checking"
-            text: root.status === "unauthenticated" ? "Log in" : "Unlock"
-            bordered: true
+          TextField {
+            id: passField
+            visible: root.apiKeyStored || root.status !== "unauthenticated"
+            width: parent.width
             foreground: root.foreground
-            fontFamily: Style.font.family
-            onClicked: root.openOverlay()
+            placeholderText: "Master password"
+            password: true
+            enabled: !root.busy
+            onTextChanged: root.masterPassword = text
+            onAccepted: root.submitUnlock()
+            Keys.onEscapePressed: root.close()
+          }
+
+          Text {
+            width: parent.width
+            // No password field on screen means no key to press — saying
+            // "enter to unlock" under a form that isn't there is just noise.
+            visible: passField.visible || root.busy || root.serviceError !== "" || root.status === "checking"
+            text: root.busy
+              ? "Unlocking…"
+              : root.serviceError !== ""
+                ? root.serviceError
+                : root.status === "checking"
+                  ? "Checking the vault session…"
+                  : "Enter to unlock"
+            color: root.serviceError !== "" ? Color.urgent : root.fainter
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
         }
 
-        // ---------- Unlocked: search and copy ----------------------------
+        // ---------- List --------------------------------------------------
         Column {
-          visible: root.unlocked
+          visible: root.screen === "list"
           width: parent.width
           spacing: Style.space(10)
 
@@ -449,15 +598,14 @@ Panel {
             Keys.onEscapePressed: root.close()
             // Enter arrives as `accepted`, not as a Keys handler — binding both
             // would fire the fetch twice.
-            onAccepted: root.copyPassword()
+            onAccepted: root.fetchSelected("copy")
             Keys.onPressed: function(event) {
-              // Ctrl+U for the username: instant, because the metadata is
-              // already here. Ctrl+O hands off to the full vault window.
-              if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_U)) {
-                root.copyUsername(); event.accepted = true
-              } else if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_O)) {
-                root.openOverlay(); event.accepted = true
-              } else if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_L)) {
+              if (!(event.modifiers & Qt.ControlModifier)) return
+              if (event.key === Qt.Key_U) {
+                root.copyUsername(null); event.accepted = true
+              } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                root.fetchSelected("detail"); event.accepted = true
+              } else if (event.key === Qt.Key_L) {
                 if (root.svc) root.svc.lock()
                 event.accepted = true
               }
@@ -483,7 +631,7 @@ Panel {
             width: parent.width
             text: !root.itemsLoaded
               ? (root.busy ? "Loading the vault…" : "No items loaded")
-              : (root.query !== "" ? "Nothing matches “" + root.query + "”" : "The vault is empty")
+              : (root.query !== "" ? "Nothing matches that" : "The vault is empty")
             color: root.fainter
             font.family: Style.font.family
             font.pixelSize: Style.font.bodySmall
@@ -492,9 +640,54 @@ Panel {
 
           Text {
             width: parent.width
+            text: root.notice !== "" ? root.notice : "enter copy · ctrl+u user · ctrl+enter open"
+            color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : root.fainter
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+        }
+
+        // ---------- Detail ------------------------------------------------
+        Column {
+          visible: root.screen === "detail"
+          width: parent.width
+          spacing: Style.space(8)
+
+          DetailField {
+            label: "USERNAME"
+            value: root.detail ? String(root.detail.username || "") : ""
+          }
+
+          DetailField {
+            label: "PASSWORD"
+            // The one place a secret is drawn. Hidden until `p`, and gone the
+            // moment the screen is left.
+            value: root.detail
+              ? (root.detailPassword === ""
+                  ? "—"
+                  : (root.showPass ? root.detailPassword : "••••••••••••"))
+              : ""
+          }
+
+          DetailField {
+            label: "URI"
+            value: root.detail && root.detail.uris && root.detail.uris.length > 0
+              ? String(root.detail.uris[0])
+              : ""
+          }
+
+          DetailField {
+            label: "NOTES"
+            value: root.detail ? String(root.detail.notes || "") : ""
+            wrap: true
+          }
+
+          Text {
+            width: parent.width
             text: root.notice !== ""
               ? root.notice
-              : "enter copy · ctrl+u user · ctrl+l lock · ctrl+o vault"
+              : (root.detail ? "p reveal · c user · y password · esc back" : "Fetching…")
             color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : root.fainter
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -505,8 +698,42 @@ Panel {
     }
   }
 
-  // One vault entry: type glyph, name, username. No secret is in the model —
-  // parseList() strips passwords before the list ever reaches a property.
+  // One labelled row on the detail screen. Hidden when the item has nothing
+  // for it, so a secure note does not show four empty boxes.
+  component DetailField: Column {
+    id: field
+    property string label: ""
+    property string value: ""
+    property bool wrap: false
+
+    visible: field.value !== ""
+    width: parent ? parent.width : 0
+    spacing: Style.space(2)
+
+    Text {
+      width: parent.width
+      text: field.label
+      color: root.fainter
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      font.letterSpacing: 1.1
+    }
+
+    Text {
+      width: parent.width
+      text: field.value
+      color: root.foreground
+      font.family: Style.font.family
+      font.pixelSize: Style.font.body
+      wrapMode: field.wrap ? Text.WordWrap : Text.NoWrap
+      maximumLineCount: field.wrap ? 6 : 1
+      elide: Text.ElideRight
+    }
+  }
+
+  // One vault entry. No secret is in the model — parseList() strips passwords
+  // before the list ever reaches a property.
   component ResultRow: CursorSurface {
     id: row
     required property int index
@@ -575,8 +802,8 @@ Panel {
       onEntered: root.selectedIndex = row.index
       onClicked: function(mouse) {
         root.selectedIndex = row.index
-        if (mouse.button === Qt.RightButton) root.copyUsername()
-        else root.copyPassword()
+        if (mouse.button === Qt.RightButton) root.fetchSelected("detail")
+        else root.fetchSelected("copy")
       }
     }
   }

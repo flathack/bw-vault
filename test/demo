@@ -1,0 +1,44 @@
+#!/bin/bash
+# Run the vault dropdown against the fixture vault, in its own Quickshell
+# instance, so screenshots and manual testing never involve a real vault.
+#
+# Nothing here touches the running Omarchy shell, the real keyring, or the
+# network: PATH is prefixed with test/fixtures, whose `bw` and `secret-tool`
+# stubs answer from test/demo-vault.json and a temp directory.
+#
+# Usage: test/demo [--unlocked]
+#   --unlocked  start with the fixture vault already unlocked, so the dropdown
+#               opens straight onto the item list
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+plugin=$(dirname "$here")
+shell_dir=${OMARCHY_PATH:-/usr/share/omarchy}/shell
+[[ -d $shell_dir/Ui ]] || { echo "Omarchy shell not found at $shell_dir" >&2; exit 1; }
+
+work=$(mktemp -d -t bw-vault-demo-XXXXXX)
+state=$(mktemp -d -t bw-vault-fixture-XXXXXX)
+trap 'rm -rf "$work" "$state"' EXIT
+
+if [[ ${1:-} == --unlocked ]]; then
+  mkdir -p "$state/keyring"
+  touch "$state/authed" "$state/unlocked"
+  printf 'demo-session-token-not-real' > "$state/keyring/service_com.aktivesolutions.bw-vault_account_bw-session_"
+  printf 'demo-client-id' > "$state/keyring/service_com.aktivesolutions.bw-vault_account_bw-client-id_"
+  printf 'demo-client-secret' > "$state/keyring/service_com.aktivesolutions.bw-vault_account_bw-client-secret_"
+fi
+
+# The plugin folder itself must stay symlink-free (omarchy plugin validate
+# rejects symlinks anywhere inside it), so the demo config is assembled out of
+# tree instead.
+ln -s "$shell_dir/Commons" "$work/Commons"
+ln -s "$shell_dir/Ui" "$work/Ui"
+for f in BarWidget.qml Service.qml VaultModel.js; do ln -s "$plugin/$f" "$work/$f"; done
+cp "$here/demo-shell.qml" "$work/shell.qml"
+
+echo "Config:        $work"
+echo "Fixture vault: $(jq length "$here/demo-vault.json") items"
+echo "Master password: anything non-empty"
+echo
+# Not exec: the EXIT trap has to survive to clean the temp dirs up.
+PATH="$here/fixtures:$PATH" BW_FIXTURE_STATE="$state" qs -p "$work"

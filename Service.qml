@@ -61,6 +61,18 @@ Item {
   // the OS keyring so it also survives a shell restart.
   property string heldSession: ""
 
+  // Whether a personal API key is already in the keyring. Only the flag is
+  // kept — never the key itself. Drives whether the panel can offer an unlock
+  // form at all, or has to send you to `bw-vault-setup` first.
+  property bool apiKeyStored: false
+
+  // The master password, in transit between the keyring lookup that unlock
+  // needs and the child process that consumes it. This is the one secret that
+  // briefly lands on this object, and it is cleared the instant unlock() is
+  // called — see finishStoredUnlock(). It exists because the lookup is async
+  // and there is nowhere else to park a value across it.
+  property string pendingMaster: ""
+
   signal loginSucceeded()
   signal unlockSucceeded()
   signal itemsRefreshed()
@@ -82,7 +94,10 @@ Item {
     return Math.max(0, Math.min(240, Math.round(raw)))
   }
 
-  Component.onCompleted: service.refresh()
+  Component.onCompleted: {
+    apiKeyIdProbe.running = true
+    service.refresh()
+  }
 
   // Bring the session up to date. Cheap when the cache is warm: a warm cache
   // means a live session, and re-listing would cost a cold start for nothing.
@@ -179,6 +194,49 @@ Item {
     unlockProc.environment = VaultModel.passwordEnvironment(masterPassword)
     unlockProc.command = VaultModel.unlockCommand()
     unlockProc.running = true
+  }
+
+  // Unlock using the API key already in the keyring, so the panel only ever
+  // has to ask for the master password. On a machine with no key stored this
+  // is refused rather than half-attempted: `bw-vault-setup` is the way in.
+  function unlockWithStored(masterPassword) {
+    if (service.busy && service.authPhase !== "") return
+    if (service.status !== "unauthenticated") {
+      service.unlock("", "", masterPassword)
+      return
+    }
+    if (!service.apiKeyStored) {
+      service.error = "No API key stored — run bw-vault-setup"
+      return
+    }
+    service.error = ""
+    service.busy = true
+    service.pendingMaster = masterPassword
+    apiKeyIdLookup.running = true
+  }
+
+  function finishStoredUnlock(clientId, clientSecret) {
+    var master = service.pendingMaster
+    service.pendingMaster = ""
+    if (!clientId || !clientSecret) {
+      service.error = "Could not read the stored API key"
+      service.busy = false
+      return
+    }
+    service.unlock(clientId, clientSecret, master)
+  }
+
+  // Called by the panel's fallback form and by `bw-vault-setup`'s in-shell
+  // counterpart. Non-fatal: a key that cannot be persisted still unlocks this
+  // session, it just has to be entered again next time.
+  function storeApiKey(clientId, clientSecret) {
+    apiKeyIdStore.payload = String(clientId || "")
+    apiKeyIdStore.stdinEnabled = true
+    apiKeyIdStore.running = true
+    apiKeySecretStore.payload = String(clientSecret || "")
+    apiKeySecretStore.stdinEnabled = true
+    apiKeySecretStore.running = true
+    service.apiKeyStored = true
   }
 
   function runUnlock() {
@@ -361,6 +419,71 @@ Item {
   Process {
     id: sessionClear
     command: VaultModel.sessionClearCommand()
+  }
+
+  // The client id is not a secret, so it can be read at startup to answer "is
+  // this machine set up?" without holding anything sensitive. The secret is
+  // only ever read in the moment it is handed to `bw login`.
+  Process {
+    id: apiKeyIdProbe
+    command: VaultModel.apiKeyIdLookupCommand()
+    stdout: StdioCollector {
+      id: apiKeyIdProbeOut
+      waitForEnd: true
+    }
+    onExited: service.apiKeyStored = String(apiKeyIdProbeOut.text || "").trim() !== ""
+  }
+
+  Process {
+    id: apiKeyIdLookup
+    command: VaultModel.apiKeyIdLookupCommand()
+    stdout: StdioCollector {
+      id: apiKeyIdLookupOut
+      waitForEnd: true
+    }
+    onExited: {
+      apiKeySecretLookup.clientId = String(apiKeyIdLookupOut.text || "").trim()
+      apiKeySecretLookup.running = true
+    }
+  }
+
+  Process {
+    id: apiKeySecretLookup
+    property string clientId: ""
+    command: VaultModel.apiKeySecretLookupCommand()
+    stdout: StdioCollector {
+      id: apiKeySecretLookupOut
+      waitForEnd: true
+    }
+    onExited: {
+      var id = apiKeySecretLookup.clientId
+      apiKeySecretLookup.clientId = ""
+      service.finishStoredUnlock(id, String(apiKeySecretLookupOut.text || "").trim())
+    }
+  }
+
+  Process {
+    id: apiKeyIdStore
+    property string payload: ""
+    command: VaultModel.apiKeyIdStoreCommand()
+    stdinEnabled: true
+    onStarted: {
+      write(payload + "\n")
+      payload = ""
+      stdinEnabled = false
+    }
+  }
+
+  Process {
+    id: apiKeySecretStore
+    property string payload: ""
+    command: VaultModel.apiKeySecretStoreCommand()
+    stdinEnabled: true
+    onStarted: {
+      write(payload + "\n")
+      payload = ""
+      stdinEnabled = false
+    }
   }
 
   // -- bw --------------------------------------------------------------------
@@ -551,6 +674,7 @@ Item {
         authPhase: service.authPhase,
         busy: service.busy,
         session: service.heldSession ? "yes" : "no",
+        apiKeyStored: service.apiKeyStored,
         items: service.items.length,
         itemsLoaded: service.itemsLoaded,
         cacheTtlMinutes: service.cacheTtlMinutes,
