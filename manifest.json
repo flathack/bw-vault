@@ -2,14 +2,64 @@
   "schemaVersion": 1,
   "id": "com.aktivesolutions.bw-vault",
   "name": "BW Vault",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "keboy",
-  "description": "Bitwarden vault overlay powered by the bw CLI. Unlock, search, and copy passwords without leaving your current app.",
+  "license": "MIT",
+  "description": "Bitwarden vault for Omarchy, powered by the bw CLI. A bar dropdown for a quick copy, a fullscreen overlay for everything else, and one shared session so neither pays for the other.",
   "kinds": [
-    "overlay"
+    "overlay",
+    "service",
+    "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "overlay": "Vault.qml"
+    "overlay": "Vault.qml",
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "BW Vault",
+    "description": "Vault lock state, and a dropdown to search and copy without leaving the window you're pasting into",
+    "category": "Security",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "maxResults": 8,
+      "cacheTtlMinutes": 15,
+      "lockOnRightClick": true,
+      "showCount": false
+    },
+    "schema": [
+      {
+        "key": "maxResults",
+        "type": "integer",
+        "label": "Search results shown in the dropdown",
+        "min": 3,
+        "max": 20,
+        "step": 1,
+        "defaultValue": 8
+      },
+      {
+        "key": "cacheTtlMinutes",
+        "type": "integer",
+        "label": "Forget the cached item list after this many idle minutes (0 = keep until locked)",
+        "min": 0,
+        "max": 240,
+        "step": 1,
+        "defaultValue": 15
+      },
+      {
+        "key": "lockOnRightClick",
+        "type": "boolean",
+        "label": "Right-clicking the bar icon locks the vault",
+        "defaultValue": true
+      },
+      {
+        "key": "showCount",
+        "type": "boolean",
+        "label": "Show the item count next to the bar icon",
+        "defaultValue": false
+      }
+    ]
   }
 }

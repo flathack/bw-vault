@@ -14,16 +14,18 @@ import "VaultModel.js" as VaultModel
 // Screens: unlock (API key + master password) → searchable item list → item detail
 // with copy-username / copy-password / reveal / lock.
 //
-// Session handling mirrors bw-tui: the session token is read from the OS
-// keyring (secret-tool) on open and re-stored after unlock, so the master
-// password is asked for once per machine. It is not verified with a separate
-// `bw status` call — the item list is fetched with it straight away, and the
-// list failing is what says the session has expired. The personal
-// API key (client_id / client_secret) is stored the same way after the first
-// login, so it is pasted from the browser exactly once. The master password
-// only ever travels through the child process environment (bw --passwordenv),
-// never argv or a QML property that outlives the flow.
-
+// This file is a view. The session token, the item metadata, and every `bw`
+// child live in Service.qml, which the shell mounts once at startup and shares
+// with the bar dropdown (BarWidget.qml). What stays here is what only a
+// fullscreen overlay has: which screen is showing, what is typed in the search
+// line, which row is selected, and the credentials on the unlock form.
+//
+// The unlock form is the reason the API-key keyring lookups stayed behind. The
+// client_id / client_secret pre-fill exists to serve exactly this screen, and
+// keeping it here means the always-loaded service never holds a client_secret.
+// The master password is the same story: it is read off the field, handed to
+// Service.unlock(), and lives from there on only inside a child process
+// environment that is cleared when the child exits.
 Item {
   id: root
 
@@ -31,20 +33,24 @@ Item {
   property var shell: null
   property var manifest: null
 
-  // -- lifecycle -------------------------------------------------------------
+  readonly property string pluginId: (manifest && manifest.id) || "com.aktivesolutions.bw-vault"
+  readonly property var svc: (root.shell && typeof root.shell.serviceFor === "function")
+    ? root.shell.serviceFor(root.pluginId)
+    : null
+
+  // -- view state ------------------------------------------------------------
 
   property bool opened: false
-  // "unlock" | "list" | "detail"
-  property string screen: "unlock"
-  // "checking" | "unauthenticated" | "locked" | "unlocked"
-  property string status: "checking"
 
-  property string heldSession: ""
+  property string screen: "unlock"
+
+  // Credentials, read off the unlock form. Bound one-way from the fields'
+  // onTextChanged, which is why clearing a field is what actually zeroes the
+  // property — assigning the property alone leaves the secret in the field.
   property string clientId: ""
   property string clientSecret: ""
   property string masterPassword: ""
 
-  property var items: []
   property var filteredItems: []
   property string filterText: ""
   property int selectedIndex: 0
@@ -52,17 +58,26 @@ Item {
   property var detail: null
   property string detailPassword: ""
   property bool showPass: false
-  // md5 of whatever this overlay last put on the clipboard. A digest, not the
-  // plaintext, so the value isn't retained — enough to tell our clipboard entry
-  // apart from anything the user copied since.
-  property string clipboardDigest: ""
+  property bool detailLoading: false
+  property string detailToken: ""
+  property int detailSeq: 0
 
-  // "idle" | "login" | "unlock" — which auth step is in flight
-  property string authPhase: "idle"
-  property bool loading: false
-  property string error: ""
+  property string localError: ""
   property string flash: ""
-  property bool sessionLookupHandled: false
+
+  // -- mirrored from the service --------------------------------------------
+
+  readonly property string status: root.svc ? root.svc.status : "checking"
+  readonly property string authPhase: root.svc ? root.svc.authPhase : ""
+  readonly property var items: root.svc ? root.svc.items : []
+  readonly property bool loading: (root.svc ? root.svc.busy : false) || root.detailLoading
+  readonly property string error: root.localError !== ""
+    ? root.localError
+    : (root.svc ? root.svc.error : "")
+
+  readonly property bool apiKeyNeeded: root.status === "unauthenticated"
+
+  // -- appearance ------------------------------------------------------------
 
   property color background: Color.menu.background
   property color foreground: Color.menu.text
@@ -77,9 +92,9 @@ Item {
   readonly property string fontFamily: Style.font.menuFamily
 
   readonly property int contentMargin: Style.spacing.panelPadding
-  // Floating unlock card: while the API key is needed the overlay shrinks to a
-  // small draggable card and drops keyboard exclusivity, so you can switch to
-  // the browser and copy client_id / client_secret without closing it.
+
+  // The unlock card floats (and is draggable) only while the API key is being
+  // entered, so a browser can be read alongside it.
   readonly property bool floating: root.screen === "unlock" && root.apiKeyNeeded
   property int floatX: 0
   property int floatY: 0
@@ -87,150 +102,152 @@ Item {
   readonly property int floatH: Math.min(Style.space(560), (panel.screen ? panel.screen.height : Style.space(700)) - Style.gapsOut * 2)
   readonly property int cardWidth: root.floating ? root.floatW : Math.min(Style.space(480), panel.width - Style.gapsOut * 2)
   readonly property int cardHeight: root.floating ? root.floatH : Math.min(Style.space(560), panel.height - Style.gapsOut * 2)
-  // The account is not yet authenticated on this machine — the API key is
-  // needed to log in. Once authenticated (even locked), only the master
-  // password is required to unlock.
-  readonly property bool apiKeyNeeded: status === "unauthenticated"
 
-  // -- lifecycle: open / close ----------------------------------------------
+  // -- open / close ----------------------------------------------------------
 
   function open(payloadJson) {
     root.opened = true
-    root.screen = "unlock"
-    root.status = "checking"
-    root.error = ""
+    root.localError = ""
     root.flash = ""
     root.showPass = false
     root.detailPassword = ""
     root.detail = null
+    root.detailLoading = false
     root.filterText = ""
     root.selectedIndex = 0
-    root.loading = true
-    root.sessionLookupHandled = false
-    clientIdField.text = ""
-    clientSecretField.text = ""
     passField.text = ""
 
-    // Start the keyring lookups (session + personal API key); the session
-    // lookup drives the status chain and the key lookups pre-fill the unlock
-    // screen.
-    sessionLookup.running = true
+    // Pre-fill the unlock form from the keyring. Cheap (secret-tool, ~25ms) and
+    // only useful to this screen, so it does not belong in the service.
     apiKeyIdLookup.running = true
     apiKeySecretLookup.running = true
+
+    // A warm cache means the list is ready to draw before the first frame; a
+    // cold one means refresh() starts the chain and onItemsRefreshed lands us
+    // on the list when it completes.
+    root.syncScreen()
+    if (root.svc) root.svc.refresh()
 
     Qt.callLater(function() {
       if (root.opened) keyCatcher.forceActiveFocus()
     })
   }
 
-  // Drop every in-memory secret. The session and API key are re-read from the
-  // OS keyring on the next open(), so nothing sensitive needs to survive in the
-  // (keepLoaded) shell process.
+  function syncScreen() {
+    if (root.svc && root.svc.unlocked && root.svc.itemsLoaded) {
+      root.screen = "list"
+      root.rebuildFilter()
+    } else {
+      root.screen = "unlock"
+    }
+  }
+
+  // Drop every secret this view is holding. The session and the item metadata
+  // deliberately survive in the service — that is what makes reopening (and the
+  // bar dropdown) instant. Nothing dropped here is recoverable from what stays:
+  // metadata carries no passwords.
   //
   // Clearing the text fields is what actually zeroes masterPassword /
-  // clientSecret: the properties are bound one-way off the fields'
-  // onTextChanged, so assigning the property alone leaves the secret sitting in
-  // the field. clientIdField is left alone — a client id isn't a secret.
+  // clientSecret; see the property declarations above. clientIdField is left
+  // alone — a client id isn't a secret.
   //
   // The clipboard is deliberately NOT wiped here. The overlay takes exclusive
   // keyboard focus, so dismissing it is the only way to reach another window and
-  // paste; wiping on dismiss would make copying useless. clipboardClearTimer
-  // handles the wipe 20s after the copy instead.
-  function clearSecrets() {
+  // paste; wiping on dismiss would make copying useless. The service's
+  // clipboardClearTimer handles the wipe 20s after the copy instead.
+  function clearViewSecrets() {
     passField.text = ""
     clientSecretField.text = ""
     root.masterPassword = ""
     root.clientSecret = ""
-    root.heldSession = ""
     root.detailPassword = ""
     root.detail = null
-    root.items = []
+    root.detailToken = ""
+    root.detailLoading = false
+    root.showPass = false
     root.filteredItems = []
     root.selectedIndex = 0
-    root.showPass = false
   }
 
   function close() {
     root.opened = false
-    root.loading = false
-    root.authPhase = ""
-    root.clearSecrets()
+    root.localError = ""
+    root.clearViewSecrets()
   }
 
   function dismiss() {
     root.opened = false
-    root.clearSecrets()
+    root.localError = ""
+    root.clearViewSecrets()
     if (root.shell && typeof root.shell.hide === "function")
-      root.shell.hide((root.manifest && root.manifest.id) || "com.aktivesolutions.bw-vault")
+      root.shell.hide(root.pluginId)
     else close()
   }
 
-  // -- status chain ----------------------------------------------------------
+  // -- service wiring --------------------------------------------------------
 
-  // After the keyring lookup lands, put the held session straight to work.
-  //
-  // Every `bw` call is a Node cold start, so the old "verify with `bw status`,
-  // then list" chain paid for two of them before showing anything (and three
-  // when the session had expired, since the failed check ran status a second
-  // time without a session). Listing optimistically collapses that: a good
-  // session goes straight to items, and a dead one is diagnosed by the list
-  // failing — see listProc, which falls back to fetchGlobalStatus() rather than
-  // surfacing an error.
-  function onSessionLookup(rawSession) {
-    if (root.sessionLookupHandled) return
-    root.sessionLookupHandled = true
-    var candidate = String(rawSession || "").trim()
-    if (candidate) {
-      root.heldSession = candidate
-      root.status = "checking"
-      root.loadItems(true)
-      return
+  Connections {
+    target: root.svc
+
+    // The list landed. Whether it came from this open or from the bar dropdown
+    // asking a moment earlier, the overlay shows it.
+    function onItemsRefreshed() {
+      if (!root.opened) return
+      root.localError = ""
+      root.screen = "list"
+      root.rebuildFilter()
+      Qt.callLater(function() {
+        if (root.opened) keyCatcher.forceActiveFocus()
+      })
     }
-    root.heldSession = ""
-    root.fetchGlobalStatus()
-  }
 
-  function fetchGlobalStatus() {
-    root.status = "checking"
-    statusProc.command = VaultModel.statusCommand("")
-    statusProc.running = true
-  }
-
-  // Keyring-backed API key pre-fill: the client_id / client_secret stored by
-  // a previous login land here, so the unlock screen only needs the master
-  // password from then on.
-  function onApiKeyIdLookup(raw) {
-    var id = String(raw || "").trim()
-    if (root.opened && id) clientIdField.text = id
-    root.focusUnlock()
-  }
-
-  function onApiKeySecretLookup(raw) {
-    var secret = String(raw || "").trim()
-    if (root.opened && secret) clientSecretField.text = secret
-    root.focusUnlock()
-  }
-
-  function onStatusOutput(raw) {
-    var st = VaultModel.parseStatus(raw)
-    if (!st) {
-      root.error = "Could not read bw status"
-      root.status = "unauthenticated"
-      root.loading = false
-      return
+    // The API key that just worked is worth keeping: the next unlock then needs
+    // only the master password. Stored from this view's fields, so the service
+    // never sees a client_secret. Non-fatal.
+    function onLoginSucceeded() {
+      apiKeyIdStore.payload = String(root.clientId || "")
+      apiKeyIdStore.stdinEnabled = true
+      apiKeyIdStore.running = true
+      apiKeySecretStore.payload = String(root.clientSecret || "")
+      apiKeySecretStore.stdinEnabled = true
+      apiKeySecretStore.running = true
     }
-    if (st.unlocked) {
-      // A valid session (ours or bw's global one) — go straight to the list.
-      root.status = "unlocked"
-      root.loadItems()
-      return
+
+    function onUnlockSucceeded() {
+      passField.text = ""
+      root.masterPassword = ""
     }
-    // Not unlocked. statusProc only ever runs without a session now, so this is
-    // the final word — there is nothing left to fall back to.
-    root.status = st.authenticated ? "locked" : "unauthenticated"
-    if (root.apiKeyNeeded) root.centerFloat()
-    root.loading = false
-    Qt.callLater(function() { root.focusUnlock() })
+
+    // Locked, or the keyring session turned out to be dead. Either way there is
+    // nothing left to show.
+    function onLockedOut(reason) {
+      root.screen = "unlock"
+      root.detail = null
+      root.detailPassword = ""
+      root.detailToken = ""
+      root.detailLoading = false
+      root.showPass = false
+      root.filteredItems = []
+      root.selectedIndex = 0
+      root.filterText = ""
+      if (root.opened) Qt.callLater(function() { root.focusUnlock() })
+    }
+
+    // The password arrives here and goes no further than this view; the service
+    // never assigned it to anything. Ignored unless this overlay is the one that
+    // asked — the bar dropdown fetches through the same service.
+    function onItemFetched(token, item) {
+      if (token !== root.detailToken) return
+      root.detailLoading = false
+      root.detail = item
+      root.detailPassword = item ? item.password : ""
+    }
+
+    function onItemFetchFailed(token, message) {
+      if (token !== root.detailToken) return
+      root.detailLoading = false
+      root.localError = message || "Could not read item"
+    }
   }
 
   // -- unlock ----------------------------------------------------------------
@@ -238,88 +255,22 @@ Item {
   function startUnlock() {
     if (root.loading) return
     if (root.apiKeyNeeded && !String(root.clientId).trim()) {
-      root.error = "client_id required"
+      root.localError = "client_id required"
       return
     }
     if (root.apiKeyNeeded && !String(root.clientSecret)) {
-      root.error = "client_secret required"
+      root.localError = "client_secret required"
       return
     }
     if (!String(root.masterPassword)) {
-      root.error = "Master password required"
+      root.localError = "Master password required"
       return
     }
-    root.error = ""
-    root.loading = true
-
-    if (root.apiKeyNeeded) {
-      // Not yet authenticated: log in with the personal API key, then unlock.
-      root.authPhase = "login"
-      loginProc.command = VaultModel.apikeyLoginCommand()
-      loginProc.environment = VaultModel.apikeyLoginEnvironment(
-        String(root.clientId).trim(), root.clientSecret, root.masterPassword)
-      loginProc.running = true
-    } else {
-      // Already authenticated; only the master password unlocks the vault.
-      root.authPhase = "unlock"
-      root.runUnlock()
-    }
+    root.localError = ""
+    if (root.svc) root.svc.unlock(root.clientId, root.clientSecret, root.masterPassword)
   }
 
-  function runUnlock() {
-    root.authPhase = "unlock"
-    unlockProc.environment = VaultModel.passwordEnvironment(root.masterPassword)
-    unlockProc.command = VaultModel.unlockCommand()
-    unlockProc.running = true
-  }
-
-  function onUnlockSuccess(rawSession) {
-    var session = String(rawSession || "").trim()
-    root.masterPassword = ""
-    root.authPhase = ""
-    if (!session) {
-      root.error = "Unlock did not return a session"
-      root.loading = false
-      return
-    }
-    root.heldSession = session
-    root.status = "unlocked"
-    // Mirror to the OS keyring (non-fatal). Snapshot the token onto the Process
-    // now — the child starts asynchronously, and onStarted reading root.heldSession
-    // would write an empty session if a dismiss landed in between. Re-open stdin so
-    // the previous run's EOF doesn't leave the write channel closed for this run.
-    sessionStore.payload = session
-    sessionStore.stdinEnabled = true
-    sessionStore.running = true
-    root.loadItems()
-  }
-
-  // -- list ------------------------------------------------------------------
-
-  // speculative: the session came straight from the keyring and has not been
-  // verified. Stay on the checking screen until items actually land, so a dead
-  // session doesn't flash an empty list on the way back to the unlock prompt.
-  function loadItems(speculative) {
-    listProc.speculative = speculative === true
-    if (!listProc.speculative) root.screen = "list"
-    root.loading = true
-    root.error = ""
-    listProc.command = VaultModel.listCommand(root.heldSession)
-    listProc.running = true
-  }
-
-  function onListOutput(raw) {
-    // Items came back, so the session is good — this is what replaces the
-    // `bw status` check on the speculative path.
-    root.status = "unlocked"
-    root.screen = "list"
-    root.items = VaultModel.parseList(raw)
-    root.rebuildFilter()
-    root.loading = false
-    Qt.callLater(function() {
-      if (root.opened) keyCatcher.forceActiveFocus()
-    })
-  }
+  // -- filtering -------------------------------------------------------------
 
   // Apply a pending debounced rebuild right now. Selection and Enter must act on
   // what the user actually typed, not on the last coalesced frame.
@@ -331,88 +282,42 @@ Item {
 
   function rebuildFilter() {
     var q = String(root.filterText).toLowerCase().trim()
+    var source = root.items
     var out = []
-    for (var i = 0; i < root.items.length; i++) {
-      if (VaultModel.matchesQuery(root.items[i], q)) out.push(root.items[i])
+    for (var i = 0; i < source.length; i++) {
+      if (VaultModel.matchesQuery(source[i], q)) out.push(source[i])
     }
     root.filteredItems = out
     if (root.selectedIndex >= root.filteredItems.length)
       root.selectedIndex = root.filteredItems.length - 1
     if (root.selectedIndex < 0) root.selectedIndex = 0
+    if (root.svc) root.svc.touch()
   }
 
   // -- detail ----------------------------------------------------------------
 
   function openDetail(id) {
     root.screen = "detail"
-    root.loading = true
-    root.error = ""
+    root.detailLoading = true
+    root.localError = ""
     root.detail = null
     root.detailPassword = ""
     root.showPass = false
-    getProc.command = VaultModel.getCommand(id, root.heldSession)
-    getProc.running = true
+    root.detailToken = "overlay:" + (++root.detailSeq)
+    if (root.svc) root.svc.fetchItem(id, root.detailToken)
   }
 
-  function onDetailOutput(raw) {
-    root.detail = VaultModel.parseItem(raw)
-    root.loading = false
-    if (root.detail) root.detailPassword = root.detail.password
-    else root.error = "Could not read item"
-  }
-
-  // -- lock ------------------------------------------------------------------
+  // -- lock / copy -----------------------------------------------------------
 
   function lockVault() {
-    if (root.heldSession) {
-      lockProc.command = VaultModel.lockCommand(root.heldSession)
-      lockProc.running = true
-    }
-    sessionClear.running = true
-    root.requestClipboardClear()
-    root.heldSession = ""
-    root.detail = null
-    root.detailPassword = ""
-    root.items = []
-    root.filteredItems = []
-    root.status = "locked"
-    root.screen = "unlock"
-    root.error = ""
-    root.loading = false
-    root.fetchGlobalStatus()
+    root.filterText = ""
+    root.localError = ""
+    if (root.svc) root.svc.lock()
   }
-
-  // -- copy ------------------------------------------------------------------
 
   function copyText(text) {
     if (!text) return
-    copyProc.stdinEnabled = true
-    copyProc.payload = text
-    copyProc.running = true
-    // Remember what we put there so the auto-wipe can recognise it later.
-    root.clipboardDigest = Qt.md5(text)
-    // Auto-wipe the clipboard shortly after a copy so a password can't sit on
-    // it indefinitely (mirrors the official Bitwarden apps).
-    clipboardClearTimer.restart()
-  }
-
-  // Wipe the clipboard, but only if it still holds the value this overlay put
-  // there. `wl-copy --clear` is unconditional, so firing it blind would destroy
-  // whatever the user copied in the meantime — or, when the vault never copied
-  // anything this session, content the vault never owned.
-  function requestClipboardClear() {
-    clipboardClearTimer.stop()
-    if (!root.clipboardDigest) return
-    clipboardRead.running = true
-  }
-
-  function onClipboardRead(raw, exitCode) {
-    var digest = root.clipboardDigest
-    root.clipboardDigest = ""
-    if (exitCode !== 0 || !digest) return
-    // md5sum prints "<32 hex>  -"; only the digest ever reaches this process.
-    if (String(raw).slice(0, 32) !== digest) return
-    clipboardClear.running = true
+    if (root.svc) root.svc.copyValue(text)
   }
 
   function flashMessage(message) {
@@ -432,11 +337,14 @@ Item {
     if (sh > 0) root.floatY = Math.max(0, Math.round((sh - root.floatH) / 2))
   }
 
+  onApiKeyNeededChanged: if (root.apiKeyNeeded) root.centerFloat()
+
   // Focus the right unlock field: the master password when the API key is
   // already configured (keyring pre-fill), otherwise the client_id field.
   // Safe to call repeatedly — hidden fields and in-flight states are no-ops.
   function focusUnlock() {
     if (!root.opened) return
+    if (root.screen !== "unlock") return
     if (root.status === "checking" || root.loading) return
     if (root.apiKeyNeeded) {
       if (root.clientId && root.clientSecret) passField.forceActiveFocus()
@@ -451,7 +359,7 @@ Item {
     return Math.max(0, Math.min(i, root.filteredItems.length - 1))
   }
 
-  // Live introspection for debugging: `omarchy-shell shell call <id> state`
+  // Live introspection for debugging: `omarchy-shell bw-vault state`
   function state() {
     return JSON.stringify({
       opened: root.opened,
@@ -462,7 +370,7 @@ Item {
       loading: root.loading,
       authPhase: root.authPhase,
       clientId: root.clientId ? "set" : "",
-      heldSession: root.heldSession ? "yes" : "no",
+      service: root.svc ? "up" : "down",
       error: root.error,
       items: root.items.length,
       filtered: root.filteredItems.length,
@@ -489,37 +397,18 @@ Item {
     }
   }
 
-  // -- processes -------------------------------------------------------------
+  // -- keyring pre-fill for the unlock form ----------------------------------
 
-  Process {
-    id: sessionLookup
-    command: VaultModel.sessionLookupCommand()
-    stdout: StdioCollector {
-      id: sessionLookupOut
-      waitForEnd: true
-    }
-    onExited: root.onSessionLookup(sessionLookupOut.text)
+  function onApiKeyIdLookup(raw) {
+    var id = String(raw || "").trim()
+    if (root.opened && id) clientIdField.text = id
+    root.focusUnlock()
   }
 
-  Process {
-    id: sessionStore
-    // Snapshotted by the caller before running; see onUnlockSuccess.
-    property string payload: ""
-    command: VaultModel.sessionStoreCommand()
-    stdinEnabled: true
-    onStarted: {
-      write(payload + "\n")
-      payload = ""
-      // Close stdin so secret-tool sees EOF, stores the secret, and exits.
-      // Quickshell's Process never closes the write channel on its own, so
-      // without this the store would block forever and never persist.
-      stdinEnabled = false
-    }
-  }
-
-  Process {
-    id: sessionClear
-    command: VaultModel.sessionClearCommand()
+  function onApiKeySecretLookup(raw) {
+    var secret = String(raw || "").trim()
+    if (root.opened && secret) clientSecretField.text = secret
+    root.focusUnlock()
   }
 
   Process {
@@ -566,189 +455,6 @@ Item {
       payload = ""
       stdinEnabled = false
     }
-  }
-
-  Process {
-    id: statusProc
-    environment: VaultModel.nonInteractiveEnvironment()
-    stdout: StdioCollector {
-      id: statusOut
-      waitForEnd: true
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-    }
-    onExited: function(exitCode) {
-      if (!root.opened) return
-      root.onStatusOutput(statusOut.text)
-    }
-  }
-
-  Process {
-    id: loginProc
-    property string collectedErr: ""
-    stdout: StdioCollector {
-      waitForEnd: true
-    }
-    stderr: StdioCollector {
-      id: loginErr
-      waitForEnd: true
-    }
-    onExited: function(exitCode) {
-      if (!root.opened) return
-      var err = String(loginErr.text || "").trim()
-
-      if (exitCode === 0) {
-        root.error = ""
-        // Persist the working API key to the keyring (non-fatal) so the next
-        // open pre-fills it and only the master password is needed.
-        apiKeyIdStore.payload = String(root.clientId || "")
-        apiKeyIdStore.stdinEnabled = true
-        apiKeyIdStore.running = true
-        apiKeySecretStore.payload = String(root.clientSecret || "")
-        apiKeySecretStore.stdinEnabled = true
-        apiKeySecretStore.running = true
-        root.runUnlock()
-        return
-      }
-
-      if (root.loading) {
-        root.error = err || "Login failed"
-        root.loading = false
-        root.authPhase = ""
-        Qt.callLater(function() {
-          if (root.opened) clientIdField.forceActiveFocus()
-        })
-      }
-    }
-  }
-
-  Process {
-    id: unlockProc
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (root.opened) root.onUnlockSuccess(text)
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (text && root.opened) {
-        root.error = String(text).trim() || "Unlock failed"
-        root.loading = false
-        root.authPhase = ""
-      }
-    }
-    onExited: function(exitCode) {
-      if (exitCode !== 0 && root.loading && root.opened && root.error === "") {
-        root.error = "Unlock failed"
-        root.loading = false
-        root.authPhase = ""
-      }
-    }
-  }
-
-  Process {
-    id: listProc
-    // Set by loadItems(): a speculative run uses an unverified keyring session,
-    // so a failure means "that session is dead", not "show the user an error".
-    property bool speculative: false
-    // Without this a dead session makes bw prompt for the master password
-    // instead of exiting non-zero, and the speculative run never resolves.
-    environment: VaultModel.nonInteractiveEnvironment()
-    stdout: StdioCollector {
-      id: listOut
-      waitForEnd: true
-    }
-    stderr: StdioCollector {
-      id: listErr
-      waitForEnd: true
-    }
-    // Decided here rather than on stream-finish because only the exit code can
-    // tell a dead session from an empty vault.
-    onExited: function(exitCode) {
-      if (!root.opened) return
-      if (exitCode !== 0) {
-        if (listProc.speculative) {
-          root.heldSession = ""
-          root.fetchGlobalStatus()
-          return
-        }
-        root.error = String(listErr.text || "").trim() || "Could not list items"
-        root.loading = false
-        return
-      }
-      root.onListOutput(listOut.text)
-    }
-  }
-
-  Process {
-    id: getProc
-    environment: VaultModel.nonInteractiveEnvironment()
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.onDetailOutput(text)
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (text && root.opened) {
-        root.error = String(text).trim()
-        root.loading = false
-      }
-    }
-    onExited: function(exitCode) {
-      if (exitCode !== 0 && root.loading && root.opened && root.error === "") {
-        root.error = "Could not read item"
-        root.loading = false
-      }
-    }
-  }
-
-  Process {
-    id: lockProc
-    environment: VaultModel.nonInteractiveEnvironment()
-  }
-
-  Process {
-    id: copyProc
-    property string payload: ""
-    command: ["wl-copy"]
-    stdinEnabled: true
-    onStarted: {
-      write(payload)
-      payload = ""
-      // Close stdin so wl-copy sees EOF, copies, and exits. Otherwise the
-      // process leaks and keeps the clipboard source pipe open.
-      stdinEnabled = false
-    }
-  }
-
-  // Reads the clipboard back so the wipe can confirm it still holds our value.
-  // `wl-paste` ships in the same wl-clipboard package as `wl-copy`, so this adds
-  // no new dependency. The output is hashed in the pipeline rather than in QML:
-  // a StdioCollector's text is read-only, so collecting the raw clipboard would
-  // leave the plaintext password parked in the (keepLoaded) shell process — the
-  // exact retention this overlay is trying to avoid. Only the digest crosses over.
-  Process {
-    id: clipboardRead
-    command: ["sh", "-c", "wl-paste --no-newline | md5sum"]
-    stdout: StdioCollector {
-      id: clipboardReadOut
-      waitForEnd: true
-    }
-    onExited: function(exitCode) { root.onClipboardRead(clipboardReadOut.text, exitCode) }
-  }
-
-  // Wipes the clipboard after a copy so a password can't linger. Only ever
-  // reached through requestClipboardClear(), which first checks the clipboard is
-  // still ours — never fired blind, and never on dismiss/close.
-  Process {
-    id: clipboardClear
-    command: ["wl-copy", "--clear"]
-  }
-
-  Timer {
-    id: clipboardClearTimer
-    interval: 20000
-    onTriggered: root.requestClipboardClear()
   }
 
   // Coalesce fast typing. Assigning a new array to the ListView model is a full
