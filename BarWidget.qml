@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "VaultModel.js" as VaultModel
@@ -22,9 +23,14 @@ Panel {
 
   // The dropdown is worth its own keybinding, separate from the full vault:
   //   omarchy-shell bw-vault-bar toggle
+  //   omarchy-shell bw-vault-bar search github
   // `omarchy-shell shell toggle com.aktivesolutions.bw-vault` stays pointed at
   // the overlay, since that is the plugin's summonable surface.
+  //
+  // Panel's own handler covers open/close/toggle; this widget declares the
+  // whole surface itself so `search` can join them on the same target.
   ipcTarget: "bw-vault-bar"
+  manageIpc: false
 
   readonly property var svc: (root.bar && root.bar.shell) ? root.bar.shell.serviceFor(moduleName) : null
 
@@ -194,7 +200,6 @@ Panel {
 
   onOpenedChanged: {
     if (opened) {
-      root.query = ""
       root.selectedIndex = 0
       root.notice = ""
       // Warm cache: this is a no-op and the list draws immediately. Cold: it
@@ -205,6 +210,10 @@ Panel {
         if (root.opened && root.unlocked) searchField.forceActiveFocus()
       })
     } else {
+      // The field is the source of query (one-way, via onTextChanged), so
+      // clearing the property alone would leave the last search sitting in the
+      // box the next time the panel opens.
+      searchField.text = ""
       root.query = ""
       root.results = []
       root.pendingToken = ""
@@ -214,6 +223,45 @@ Panel {
 
   onQueryChanged: root.rebuild()
   onItemsChanged: if (root.opened) root.rebuild()
+
+  // Everything here filters metadata that is already in this process. Nothing
+  // reads, fetches or copies a secret — a password still costs a keystroke on a
+  // panel someone is looking at, which is the only place that decision belongs.
+  IpcHandler {
+    target: root.ipcTarget
+
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function toggle(): void { root.toggle() }
+
+    // Open the dropdown with the search line already filled in, for a keybind
+    // or a script that knows what you are looking for.
+    function search(query: string): void {
+      root.query = String(query || "")
+      if (!root.opened) root.open()
+      root.rebuild()
+      Qt.callLater(function() {
+        if (root.opened && root.unlocked) {
+          searchField.text = root.query
+          searchField.forceActiveFocus()
+        }
+      })
+    }
+
+    // Deliberately says nothing about *which* item is selected or what was
+    // copied — only that a fetch is or is not outstanding.
+    function status(): string {
+      return JSON.stringify({
+        status: root.status,
+        items: root.items.length,
+        results: root.results.length,
+        query: root.query,
+        opened: root.opened,
+        pending: root.pendingToken !== "",
+        notice: root.notice
+      })
+    }
+  }
 
   function openOverlay() {
     root.close()
@@ -446,7 +494,7 @@ Panel {
             width: parent.width
             text: root.notice !== ""
               ? root.notice
-              : "enter password · ctrl+u username · ctrl+l lock · ctrl+o full vault"
+              : "enter copy · ctrl+u user · ctrl+l lock · ctrl+o vault"
             color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : root.fainter
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
