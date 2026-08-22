@@ -6,7 +6,7 @@ Rewritten in Quickshell/QML from the [bw-tui](https://github.com/keboy/bw-tui) B
 
 ![Search and copy](screenshot-list.png)
 
-![Item detail](screenshot-detail.png) ![First run](screenshot-setup.png)
+![Item detail](screenshot-detail.png) ![First run](screenshot-firstrun.png)
 
 *Screenshots are of the fixture vault in `test/`, not a real one — see [Development](#development).*
 
