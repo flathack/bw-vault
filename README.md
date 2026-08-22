@@ -67,7 +67,13 @@ Bind the dropdown in `~/.config/hypr/bindings.lua`:
 o.bind("SUPER + B", "Bitwarden vault", "omarchy-shell bw-vault-bar toggle")
 ```
 
-Or click the padlock in the bar. **Right-clicking** it locks the vault.
+Or click the shield in the bar. **Right-clicking** it locks the vault.
+
+Locking is worth its own binding too — `ctrl+l` inside the dropdown only reaches you while the dropdown is open:
+
+```lua
+o.bind("SUPER + ALT + B", "Lock vault", "omarchy-shell com.aktivesolutions.bw-vault lock")
+```
 
 It can also be opened with the search line already filled in — useful from a script, or a per-site keybinding:
 
@@ -100,6 +106,7 @@ Clicking a row copies its password; right-clicking a row opens its detail.
 | `p` | Reveal / hide the password |
 | `c` | Copy the username |
 | `y` | Copy the password |
+| `ctrl+l` | Lock the vault |
 | `esc` / `←` | Back to the list |
 
 **Unlock**

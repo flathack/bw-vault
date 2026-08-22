@@ -450,6 +450,15 @@ Panel {
         if (root.screen === "detail" && dx < 0) root.leaveDetail()
       }
       onTextKey: function(t) {
+        // Ctrl+L arrives here as the control character it produces (0x0C),
+        // not as "l" — PanelKeyCatcher's movement branch matches on event.text
+        // and a held Ctrl changes it, so the vim-style "l" binding never sees
+        // this. Handled on every screen so lock is reachable from the detail
+        // view too, where there is no field to press ctrl+l in.
+        if (t === "\f") {
+          if (root.svc) root.svc.lock()
+          return
+        }
         if (root.screen !== "detail") return
         if (t === "p" || t === "P") root.showPass = !root.showPass
         else if (t === "c" || t === "C") root.copyUsername(root.detail)
@@ -701,7 +710,7 @@ Panel {
             width: parent.width
             text: root.notice !== ""
               ? root.notice
-              : (root.detail ? "p reveal · c user · y password · esc back" : "Fetching…")
+              : (root.detail ? "p reveal · c user · y password · ctrl+l lock · esc back" : "Fetching…")
             color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : root.fainter
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
