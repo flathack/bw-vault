@@ -140,11 +140,7 @@ Item metadata is now cached between opens where 1.x dropped it on every close �
 - `libsecret` (`secret-tool`) — OS keyring access
 - `wl-clipboard` (`wl-copy`, `wl-paste`) — clipboard
 
-```sh
-# Arch / Omarchy
-omarchy pkg add libsecret wl-clipboard
-# bw: see the Bitwarden CLI install docs
-```
+All three are usually already present on Omarchy. If one is missing, add it with your usual package tooling — the plugin never installs anything itself, and never invokes a package manager.
 
 ## Troubleshooting
 
