@@ -146,7 +146,7 @@ Item {
   function fetchGlobalStatus() {
     service.status = "checking"
     service.busy = true
-    statusProc.command = VaultModel.statusCommand("")
+    statusProc.command = VaultModel.statusCommand()
     statusProc.running = true
   }
 
@@ -285,7 +285,8 @@ Item {
     listProc.generation = service.generation
     service.busy = true
     service.error = ""
-    listProc.command = VaultModel.listCommand(service.heldSession)
+    listProc.command = VaultModel.listCommand()
+    listProc.environment = VaultModel.sessionEnvironment(service.heldSession)
     listProc.running = true
   }
 
@@ -308,7 +309,8 @@ Item {
   function fetchItem(id, token) {
     getProc.token = String(token || "")
     getProc.generation = service.generation
-    getProc.command = VaultModel.getCommand(id, service.heldSession)
+    getProc.command = VaultModel.getCommand(id)
+    getProc.environment = VaultModel.sessionEnvironment(service.heldSession)
     getProc.running = true
   }
 
@@ -316,7 +318,8 @@ Item {
 
   function lock() {
     if (service.heldSession) {
-      lockProc.command = VaultModel.lockCommand(service.heldSession)
+      lockProc.command = VaultModel.lockCommand()
+      lockProc.environment = VaultModel.sessionEnvironment(service.heldSession)
       lockProc.running = true
     }
     sessionClear.running = true

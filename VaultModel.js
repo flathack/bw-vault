@@ -22,15 +22,25 @@ const KEYRING_SERVICE = "com.aktivesolutions.bw-vault"
 const KEYRING_ACCOUNT = "bw-session"
 const PASSWORD_ENV = "BW_VAULT_MASTER_PASSWORD"
 
-// buildCommand(args, session) — a `bw` invocation. A held session is appended
-// as --session so reads work without re-entering the master password. login /
-// unlock are excluded because they establish the session rather than use it.
-function buildCommand(args, session, useSession) {
-  var full = ["bw"].concat(args || [])
-  if (useSession && session) {
-    full.push("--session", session)
+// buildCommand(args) — a `bw` invocation. The held session never travels on
+// argv: command lines are world-readable through /proc/<pid>/cmdline, so
+// --session would expose an active vault token to every local user. Reads
+// instead carry the session through the child's BW_SESSION environment
+// variable — see sessionEnvironment(). login / unlock / status establish or
+// classify the session rather than use it, so they run without one.
+function buildCommand(args) {
+  return ["bw"].concat(args || [])
+}
+
+// Process `environment` map for commands that consume a held session. The
+// token rides in BW_SESSION (what bw itself exports after `bw unlock --raw`),
+// which stays inside the child's environment block instead of argv.
+function sessionEnvironment(session) {
+  var env = nonInteractiveEnvironment()
+  if (session) {
+    env.BW_SESSION = String(session)
   }
-  return full
+  return env
 }
 
 // Every `bw` child runs headless, so no invocation may ever wait on a prompt.
@@ -103,12 +113,11 @@ function apiKeySecretStoreCommand() {
 
 // -- Commands ----------------------------------------------------------------
 
-// statusCommand(session) — where bw stands globally. Only ever called with an
-// empty session now: a held session is tested by using it (see loadItems), so
-// status is the fallback that classifies locked vs unauthenticated. The session
-// parameter is kept because buildCommand takes one.
-function statusCommand(session) {
-  return buildCommand(["status"], session, true)
+// statusCommand() — where bw stands globally. Only ever called without a
+// session: a held session is tested by using it (see loadItems), so status is
+// the fallback that classifies locked vs unauthenticated.
+function statusCommand() {
+  return buildCommand(["status"])
 }
 
 // Personal API key login. The client id/secret travel through the process
@@ -123,7 +132,7 @@ function apikeyLoginCommand() {
   // UNVERIFIED: this flag has not been reproduced as the fix for fresh-machine
   // login against an empty BITWARDENCLI_APPDATA_DIR — do not read this comment as
   // documenting that cause.
-  return buildCommand(["login", "--apikey", "--passwordenv", PASSWORD_ENV], "", false)
+  return buildCommand(["login", "--apikey", "--passwordenv", PASSWORD_ENV])
 }
 
 // Environment for login: client id/secret + master password off argv, and
@@ -136,19 +145,19 @@ function apikeyLoginEnvironment(clientId, clientSecret, password) {
 }
 
 function unlockCommand() {
-  return buildCommand(["unlock", "--passwordenv", PASSWORD_ENV, "--raw"], "", false)
+  return buildCommand(["unlock", "--passwordenv", PASSWORD_ENV, "--raw"])
 }
 
-function listCommand(session) {
-  return buildCommand(["list", "items"], session, true)
+function listCommand() {
+  return buildCommand(["list", "items"])
 }
 
-function getCommand(id, session) {
-  return buildCommand(["get", "item", id], session, true)
+function getCommand(id) {
+  return buildCommand(["get", "item", id])
 }
 
-function lockCommand(session) {
-  return buildCommand(["lock"], session, true)
+function lockCommand() {
+  return buildCommand(["lock"])
 }
 
 // -- Output parsing ----------------------------------------------------------
