@@ -41,12 +41,12 @@ omarchy plugin add https://github.com/flathack/bw-vault.git --enable
 
 `--enable` puts the padlock in your bar and asks which section. Without it, run `omarchy plugin enable com.aktivesolutions.bw-vault --section right` afterwards.
 
-For an install pinned to the reviewed 2.1.0 release, add it without enabling,
+For an install pinned to the reviewed 2.1.1 release, add it without enabling,
 detach the clone at the immutable release tag, then enable it:
 
 ```sh
 omarchy plugin add https://github.com/flathack/bw-vault.git
-git -C ~/.config/omarchy/plugins/com.aktivesolutions.bw-vault checkout --detach v2.1.0
+git -C ~/.config/omarchy/plugins/com.aktivesolutions.bw-vault checkout --detach v2.1.1
 omarchy plugin enable com.aktivesolutions.bw-vault --section right
 ```
 

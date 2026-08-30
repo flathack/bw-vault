@@ -31,6 +31,19 @@ require(
     "password must travel separately from cached item metadata",
 )
 
+require(
+    "onScreenChanged: Qt.callLater(function() { root.focusCurrentScreen() })" in widget,
+    "screen changes must explicitly transfer keyboard focus",
+)
+require(
+    'if (root.screen === "detail") keyCatcher.forceActiveFocus()' in widget,
+    "detail shortcuts require PanelKeyCatcher focus",
+)
+require(
+    'blocked: root.screen !== "detail" &&' in widget,
+    "a stale hidden-field focus must not block detail keys",
+)
+
 for forbidden_collector in ("sessionLookupOut", "apiKeySecretLookupOut", "getOut"):
     require(forbidden_collector not in service, f"secret collector remains: {forbidden_collector}")
 
