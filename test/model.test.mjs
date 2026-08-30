@@ -45,12 +45,14 @@ const detail = model.parseItem(
     type: 1,
     username: "ada",
     password: "one-request-only",
+    hasTotp: true,
     notes: "shown only in detail",
     uris: [{ uri: "https://example.test" }],
     ignoredSecret: "must-not-be-mapped",
   }),
 );
 assert.equal(detail.password, "one-request-only");
+assert.equal(detail.hasTotp, true);
 assert.equal("ignoredSecret" in detail, false);
 
 assert.deepEqual(Array.from(model.listCommand("/plugin/bin/bw-vault-query")), [
@@ -60,6 +62,11 @@ assert.deepEqual(Array.from(model.listCommand("/plugin/bin/bw-vault-query")), [
 assert.deepEqual(Array.from(model.getCommand("/plugin/bin/bw-vault-query", "item-1")), [
   "/plugin/bin/bw-vault-query",
   "get",
+  "item-1",
+]);
+assert.deepEqual(Array.from(model.totpCommand("/plugin/bin/bw-vault-query", "item-1")), [
+  "/plugin/bin/bw-vault-query",
+  "totp",
   "item-1",
 ]);
 

@@ -35,12 +35,19 @@ get)
       type: (.type // 0),
       username: (.login.username // ""),
       password: (.login.password // ""),
+      hasTotp: ((.login.totp // "") != ""),
       notes: (.notes // ""),
       uris: ((.login.uris // []) | map({uri: (.uri // "")}))
     }
   '
   ;;
+totp)
+  [[ $# -eq 2 && -n $2 ]] || fail "usage: bw-vault-query totp <item-id>"
+  # Ask Bitwarden to calculate the current code. The TOTP seed remains inside
+  # the short-lived bw process and is never emitted to QML.
+  bw get totp "$2"
+  ;;
 *)
-  fail "usage: bw-vault-query <list | get ITEM_ID>"
+  fail "usage: bw-vault-query <list | get ITEM_ID | totp ITEM_ID>"
   ;;
 esac

@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 
@@ -13,6 +14,22 @@ import qs.Commons
 // real shell would have done from the manifest.
 ShellRoot {
   id: host
+
+  // Fixture-only introspection used by runtime tests. The demo always puts
+  // stub bw/secret-tool binaries first in PATH, so these values can never come
+  // from a real vault.
+  IpcHandler {
+    target: "bw-vault-demo"
+    function state(): string {
+      return JSON.stringify({
+        screen: widget.screen,
+        opened: widget.opened,
+        pendingItem: widget.pendingToken !== "",
+        pendingTotp: widget.pendingTotpToken !== "",
+        totp: widget.detailTotp
+      })
+    }
+  }
 
   Service {
     id: vaultService

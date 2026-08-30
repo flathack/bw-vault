@@ -13,7 +13,8 @@ branch.
 
 - The official Bitwarden CLI remains the vault and cryptography boundary.
 - A short-lived helper allowlists fields from `bw list` and `bw get` before QML
-  receives their JSON.
+  receives their JSON. TOTP seeds remain inside Bitwarden; QML receives only a
+  presence flag and codes calculated by `bw get totp` on demand.
 - Secrets use child-process environments or stdin instead of command-line
   arguments. Reusable credentials and sessions are stored through Secret
   Service (`secret-tool`).

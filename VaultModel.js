@@ -157,6 +157,10 @@ function getCommand(helperPath, id) {
   return [String(helperPath || ""), "get", String(id || "")]
 }
 
+function totpCommand(helperPath, id) {
+  return [String(helperPath || ""), "totp", String(id || "")]
+}
+
 function lockCommand() {
   return buildCommand(["lock"])
 }
@@ -236,6 +240,7 @@ function parseItem(raw) {
     name: String(it.name || ""),
     username: String(it.username || ""),
     password: String(it.password || ""),
+    hasTotp: it.hasTotp === true,
     type: itemTypeName(it.type),
     notes: String(it.notes || ""),
     uris: uris
