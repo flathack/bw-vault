@@ -27,16 +27,24 @@ fi
 
 detail_json=$("$root/bin/bw-vault-query" get 11111111-0001-4000-8000-000000000002)
 jq -e '
-  ((keys | sort) == (["id", "name", "notes", "password", "type", "uris", "username"] | sort))
+  ((keys | sort) == (["hasTotp", "id", "name", "notes", "password", "type", "uris", "username"] | sort))
   and .password == "demo-not-a-real-password-2"
   and .username == "ada-demo"
+  and .hasTotp == false
 ' <<<"$detail_json" >/dev/null
 
 limited_detail=$("$root/bin/bw-vault-query" get 11111111-0001-4000-8000-000000000001)
+if ! jq -e '.hasTotp == true' <<<"$limited_detail" >/dev/null; then
+  echo "sanitized detail did not preserve the TOTP presence flag" >&2
+  exit 1
+fi
 if grep -Eq 'totp-must-not-survive|hidden-field-must-not-survive' <<<"$limited_detail"; then
   echo "sanitized detail leaked a TOTP or hidden custom field" >&2
   exit 1
 fi
+
+totp_code=$("$root/bin/bw-vault-query" totp 11111111-0001-4000-8000-000000000001)
+[[ $totp_code == "123456" ]] || { echo "unexpected TOTP fixture output" >&2; exit 1; }
 
 node "$here/model.test.mjs"
 python3 "$here/security_contracts.py"

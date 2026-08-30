@@ -14,14 +14,14 @@ Rewritten in Quickshell/QML from the [bw-tui](https://github.com/keboy/bw-tui) B
 
 `bw` is a Node program and a cold start costs about four seconds. That number shapes everything here.
 
-The session, the item list and every `bw` child live in a **service** the shell mounts once and keeps. The dropdown is a view onto it. Opening the dropdown against a warm list costs nothing measurable — filtering 215 items lands well under a tenth of a second, because no `bw` runs at all. Only the password itself is fetched on demand, because only the password is worth never caching.
+The session, the item list and every `bw` child live in a **service** the shell mounts once and keeps. The dropdown is a view onto it. Opening the dropdown against a warm list costs nothing measurable — filtering 215 items lands well under a tenth of a second, because no `bw` runs at all. Passwords and current one-time codes are fetched only when needed and never enter the list cache.
 
-What that caching does and does not cover is spelled out in [Security notes](#security-notes). The short version: item *metadata* now outlives the panel, and passwords never do.
+What that caching does and does not cover is spelled out in [Security notes](#security-notes). The short version: item *metadata* now outlives the panel; passwords and one-time codes do not.
 
 ## Features
 
 - **Bar dropdown** — lock state at a glance; click for a search box over your vault. Enter copies the password. `ctrl+u` copies the username with no `bw` call at all, because the username is already in the cached list.
-- **Item detail** — `ctrl+enter` opens the selected item: username, password (hidden until you press `p`), URI, notes. The only screen that ever draws a secret.
+- **Item detail** — `ctrl+enter` opens the selected item: username, password (hidden until you press `p`), current TOTP code when configured, URI, and notes.
 - **Master-password unlock** — in the dropdown. The password travels through the child process environment (`bw --passwordenv`), never argv, and its environment is cleared when the child exits.
 - **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`), which needs no interactive 2FA and skips new-device verification. Stored once per machine by `bw-vault-setup`; see [Setup](#setup).
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine and survives a shell restart.
@@ -41,12 +41,12 @@ omarchy plugin add https://github.com/flathack/bw-vault.git --enable
 
 `--enable` puts the padlock in your bar and asks which section. Without it, run `omarchy plugin enable com.aktivesolutions.bw-vault --section right` afterwards.
 
-For an install pinned to the reviewed 2.1.1 release, add it without enabling,
+For an install pinned to the reviewed 2.2.0 release, add it without enabling,
 detach the clone at the immutable release tag, then enable it:
 
 ```sh
 omarchy plugin add https://github.com/flathack/bw-vault.git
-git -C ~/.config/omarchy/plugins/com.aktivesolutions.bw-vault checkout --detach v2.1.1
+git -C ~/.config/omarchy/plugins/com.aktivesolutions.bw-vault checkout --detach v2.2.0
 omarchy plugin enable com.aktivesolutions.bw-vault --section right
 ```
 
@@ -118,6 +118,8 @@ Clicking a row copies its password; right-clicking a row opens its detail.
 | `p` | Reveal / hide the password |
 | `c` | Copy the username |
 | `y` | Copy the password |
+| `o` | Copy the current one-time code |
+| `r` | Refresh the one-time code |
 | `ctrl+l` | Lock the vault |
 | `esc` / `←` | Back to the list |
 
@@ -178,7 +180,8 @@ omarchy plugin remove com.aktivesolutions.bw-vault
 - Credentials handed to `bw login` / `bw unlock` have that environment cleared when the child exits, on both the success and failure paths. Before 2.0 the master password stayed set on the Process until the next unlock overwrote it.
 - **Item metadata is cached between opens, and that is a real change from 1.x.** A short-lived helper reduces `bw list` output to names, usernames, ids, types and URIs before it enters the long-lived QML process. Passwords, notes and other Bitwarden fields never enter the service's list buffer. The metadata lives until you lock or `cacheTtlMinutes` of idleness passes. If you would rather have the old behaviour at the cost of a four-second wait per open, set `cacheTtlMinutes` to 1; the session is unaffected either way.
 - Item passwords are fetched on demand through the same field-limiting helper. Reads are serialized, so a delayed response cannot be attributed to a newer selection. The password is separated from item metadata before the service emits it, and temporary process buffers and `BW_SESSION` environments are cleared after each request. The widget retains a password only while its detail screen is showing it.
-- The detail screen is the only place a secret is drawn, and it is masked until you press `p`. A bar dropdown sits in the open — that is worth remembering before revealing one in a meeting.
+- TOTP seeds never enter QML. The detail helper emits only a `hasTotp` boolean; a separate `bw get totp <id>` invocation asks the official Bitwarden CLI to calculate the current code. The displayed code is cleared when detail closes or the vault locks and refreshes every 30 seconds while visible.
+- The detail screen is the only place a secret is drawn. Passwords remain masked until you press `p`; one-time codes are shown directly because they are short-lived. A bar dropdown sits in the open — remember that before opening an item during screen sharing or a meeting.
 - Vault-controlled strings are forced to plain-text rendering; item names, usernames, notes and URIs cannot inject QML rich-text markup.
 - A `bw list` started before a lock cannot repopulate the cache after it: in-flight children carry the generation they started in and drop their results if it has moved.
 - Password and username clipboard writes carry `wl-copy --sensitive`. The timed wipe compares a digest first, so it does not erase a newer clipboard value owned by another application.
@@ -199,7 +202,7 @@ Service.qml          # session, item metadata, every bw child. Mounted once by t
 BarWidget.qml        # bar icon + dropdown: unlock, search, copy, detail
 VaultModel.js        # bw CLI command building + JSON parsing (pure JS)
 bin/bw-vault-setup   # one-time API key storage, from a terminal
-bin/bw-vault-query   # short-lived field-limiting wrapper around bw list/get
+bin/bw-vault-query   # short-lived field-limiting wrapper around bw list/get/totp
 test/run             # deterministic unit, contract, fixture and lint checks
 test/demo            # run the dropdown against a fixture vault, in its own shell
 test/demo-vault.json # the fixture vault

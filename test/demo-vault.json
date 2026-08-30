@@ -1,7 +1,7 @@
 [
   { "id": "11111111-0001-4000-8000-000000000001", "name": "Example Bank", "type": 1,
     "login": { "username": "ada@example.com", "password": "demo-not-a-real-password-1",
-               "totp": "totp-must-not-survive",
+               "totp": "otpauth://totp/Demo?secret=totp-must-not-survive",
                "uris": [{ "uri": "https://bank.example.com" }] },
     "fields": [{ "name": "PIN", "value": "hidden-field-must-not-survive", "type": 1 }],
     "notes": "" },

@@ -30,6 +30,10 @@ require(
     "signal itemFetched(string token, var item, string password)" in service,
     "password must travel separately from cached item metadata",
 )
+require(
+    "signal totpFetched(string token, string code)" in service,
+    "TOTP codes must travel separately from item metadata",
+)
 
 require(
     "onScreenChanged: Qt.callLater(function() { root.focusCurrentScreen() })" in widget,
@@ -61,11 +65,33 @@ require(
 )
 require("bw list items | jq -c" in helper, "helper must minimize list output before QML")
 require("bw get item \"$2\" | jq -c" in helper, "helper must minimize detail output before QML")
+require('bw get totp "$2"' in helper, "TOTP must be calculated by the Bitwarden CLI")
+require(
+    "password: (.login.password" in helper and "hasTotp:" in helper,
+    "detail helper must expose only a TOTP presence flag, never map the seed",
+)
+require(
+    "totp: (.login.totp" not in helper,
+    "TOTP seed must never be mapped into helper output",
+)
 
-for process_name in ("listProc", "getProc", "lockProc"):
+for process_name in ("listProc", "getProc", "totpProc", "lockProc"):
     require(
         f"{process_name}.environment = VaultModel.nonInteractiveEnvironment()" in service,
         f"{process_name} must clear its BW_SESSION environment",
     )
+
+require(
+    'if (!waitForCliLock) service.fetchGlobalStatus()' in service,
+    "lock must not query status until the CLI lock child exits",
+)
+require(
+    "if (requestGeneration === service.generation) service.fetchGlobalStatus()" in service,
+    "the lock child must refresh status only for the active generation",
+)
+require(
+    "property bool clearAfterExit: false" in service and "sessionStore.clearAfterExit = true" in service,
+    "locking must serialize session-store termination before keyring clear",
+)
 
 print("Security contract tests passed")

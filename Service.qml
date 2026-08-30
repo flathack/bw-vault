@@ -21,6 +21,8 @@ import "VaultModel.js" as VaultModel
 //   * A password fetched by fetchItem() travels out through the itemFetched
 //     signal and is never assigned to a property on this object. The requester
 //     drops it when it is done.
+//   * A TOTP seed never enters this process. fetchTotp() asks the CLI for only
+//     the current code and clears its temporary buffer after emitting it.
 //   * Credentials passed to unlock() go straight into a child's environment and
 //     that environment is cleared the moment the child exits. They are never
 //     stored here either.
@@ -57,7 +59,7 @@ Item {
 
   readonly property bool hasSession: service.heldSession !== ""
   readonly property bool unlocked: service.status === "unlocked"
-  readonly property bool fetching: getProc.running
+  readonly property bool fetching: getProc.running || totpProc.running
 
   // Session token. Held here so reads can skip the master password; mirrored to
   // the OS keyring so it also survives a shell restart.
@@ -81,6 +83,8 @@ Item {
   signal lockedOut(string reason)
   signal itemFetched(string token, var item, string password)
   signal itemFetchFailed(string token, string message)
+  signal totpFetched(string token, string code)
+  signal totpFetchFailed(string token, string message)
   signal authFailed()
 
   // -- lifecycle -------------------------------------------------------------
@@ -118,6 +122,7 @@ Item {
     service.status = "checking"
     service.busy = true
     sessionLookup.output = ""
+    sessionLookup.generation = service.generation
     sessionLookup.running = true
   }
 
@@ -155,6 +160,7 @@ Item {
   function fetchGlobalStatus() {
     service.status = "checking"
     service.busy = true
+    statusProc.generation = service.generation
     statusProc.command = VaultModel.statusCommand()
     statusProc.running = true
   }
@@ -196,6 +202,7 @@ Item {
       // successful login does not need the password passed in a second time.
       unlockProc.environment = VaultModel.passwordEnvironment(masterPassword)
       unlockProc.output = ""
+      loginProc.generation = service.generation
       loginProc.running = true
       return
     }
@@ -204,6 +211,7 @@ Item {
     unlockProc.environment = VaultModel.passwordEnvironment(masterPassword)
     unlockProc.output = ""
     unlockProc.command = VaultModel.unlockCommand()
+    unlockProc.generation = service.generation
     unlockProc.running = true
   }
 
@@ -211,7 +219,7 @@ Item {
   // has to ask for the master password. On a machine with no key stored this
   // is refused rather than half-attempted: `bw-vault-setup` is the way in.
   function unlockWithStored(masterPassword) {
-    if (service.busy && service.authPhase !== "") return
+    if (service.busy) return
     if (service.status !== "unauthenticated") {
       service.unlock("", "", masterPassword)
       return
@@ -223,6 +231,7 @@ Item {
     service.error = ""
     service.busy = true
     service.pendingMaster = masterPassword
+    apiKeyIdLookup.generation = service.generation
     apiKeyIdLookup.running = true
   }
 
@@ -242,6 +251,7 @@ Item {
     service.authPhase = "unlock"
     unlockProc.output = ""
     unlockProc.command = VaultModel.unlockCommand()
+    unlockProc.generation = service.generation
     unlockProc.running = true
   }
 
@@ -258,7 +268,10 @@ Item {
   function clearSessionEnvironments() {
     listProc.environment = VaultModel.nonInteractiveEnvironment()
     getProc.environment = VaultModel.nonInteractiveEnvironment()
-    lockProc.environment = VaultModel.nonInteractiveEnvironment()
+    totpProc.environment = VaultModel.nonInteractiveEnvironment()
+    // A running lock child still needs the session snapshot it was launched
+    // with. Its onExited handler clears this environment.
+    if (!lockProc.running) lockProc.environment = VaultModel.nonInteractiveEnvironment()
   }
 
   function failAuthentication(message) {
@@ -284,6 +297,7 @@ Item {
     // write an empty session if a lock landed in between. stdin is re-opened so
     // the previous run's EOF has not left the write channel closed.
     sessionStore.payload = session
+    sessionStore.clearAfterExit = false
     sessionStore.stdinEnabled = true
     sessionStore.running = true
     service.unlockSucceeded()
@@ -343,18 +357,60 @@ Item {
     return true
   }
 
+  // Fetch only the current one-time code. The seed never leaves Bitwarden:
+  // bin/bw-vault-query invokes `bw get totp` instead of exposing login.totp.
+  function fetchTotp(id, token) {
+    if (totpProc.running) {
+      service.totpFetchFailed(String(token || ""), "Another one-time code is still loading")
+      return false
+    }
+    if (!service.helperPath) {
+      service.totpFetchFailed(String(token || ""), "BW Vault helper path is unavailable")
+      return false
+    }
+    totpProc.token = String(token || "")
+    totpProc.generation = service.generation
+    totpProc.output = ""
+    totpProc.errorOutput = ""
+    totpProc.command = VaultModel.totpCommand(service.helperPath, id)
+    totpProc.environment = VaultModel.sessionEnvironment(service.heldSession)
+    totpProc.running = true
+    return true
+  }
+
   // -- lock ------------------------------------------------------------------
 
   function lock() {
+    var startCliLock = !lockProc.running && (service.unlocked || service.heldSession !== "")
+    var waitForCliLock = lockProc.running || startCliLock
     service.generation++
+    if (apiKeyIdLookup.running) apiKeyIdLookup.running = false
+    if (apiKeySecretLookup.running) apiKeySecretLookup.running = false
+    if (loginProc.running) loginProc.running = false
+    if (unlockProc.running) unlockProc.running = false
+    apiKeySecretLookup.clientId = ""
+    apiKeySecretLookup.output = ""
+    unlockProc.output = ""
     if (listProc.running) listProc.running = false
     if (getProc.running) getProc.running = false
-    if (service.heldSession) {
+    if (totpProc.running) totpProc.running = false
+    if (lockProc.running) {
+      // A repeated lock request still waits for the already-running child.
+      lockProc.generation = service.generation
+    } else if (startCliLock) {
+      lockProc.generation = service.generation
       lockProc.command = VaultModel.lockCommand()
       lockProc.environment = VaultModel.sessionEnvironment(service.heldSession)
       lockProc.running = true
     }
-    sessionClear.running = true
+    if (sessionStore.running) {
+      // Do not let a just-completed unlock re-store its session after the
+      // clear. Terminate the store and clear once its child has exited.
+      sessionStore.clearAfterExit = true
+      sessionStore.running = false
+    } else {
+      sessionClear.running = true
+    }
     copyProc.queuedPayload = ""
     service.requestClipboardClear()
     service.heldSession = ""
@@ -368,7 +424,9 @@ Item {
     service.clearAuthEnvironment()
     service.clearSessionEnvironments()
     service.lockedOut("locked")
-    service.fetchGlobalStatus()
+    // Querying before `bw lock` exits can observe the old unlocked state and
+    // repopulate the cache after the user explicitly locked the vault.
+    if (!waitForCliLock) service.fetchGlobalStatus()
   }
 
   // A session that turned out to be dead. Same teardown as lock(), minus the
@@ -442,14 +500,16 @@ Item {
   Process {
     id: sessionLookup
     property string output: ""
+    property int generation: 0
     command: VaultModel.sessionLookupCommand()
     stdout: SplitParser {
       onRead: function(line) { sessionLookup.output += String(line || "") }
     }
     onExited: {
       var value = sessionLookup.output
+      var requestGeneration = sessionLookup.generation
       sessionLookup.output = ""
-      service.onSessionLookup(value)
+      if (requestGeneration === service.generation) service.onSessionLookup(value)
     }
   }
 
@@ -457,6 +517,7 @@ Item {
     id: sessionStore
     // Snapshotted by the caller before running; see onUnlockSuccess.
     property string payload: ""
+    property bool clearAfterExit: false
     command: VaultModel.sessionStoreCommand()
     stdinEnabled: true
     onStarted: {
@@ -466,6 +527,15 @@ Item {
       // Quickshell's Process never closes the write channel on its own, so
       // without this the store would block forever and never persist.
       stdinEnabled = false
+    }
+    onExited: {
+      // Also cover a child that failed before onStarted could consume it.
+      payload = ""
+      stdinEnabled = false
+      if (clearAfterExit) {
+        clearAfterExit = false
+        sessionClear.running = true
+      }
     }
   }
 
@@ -489,14 +559,17 @@ Item {
 
   Process {
     id: apiKeyIdLookup
+    property int generation: 0
     command: VaultModel.apiKeyIdLookupCommand()
     stdout: StdioCollector {
       id: apiKeyIdLookupOut
       waitForEnd: true
     }
     onExited: {
+      if (apiKeyIdLookup.generation !== service.generation) return
       apiKeySecretLookup.clientId = String(apiKeyIdLookupOut.text || "").trim()
       apiKeySecretLookup.output = ""
+      apiKeySecretLookup.generation = apiKeyIdLookup.generation
       apiKeySecretLookup.running = true
     }
   }
@@ -505,6 +578,7 @@ Item {
     id: apiKeySecretLookup
     property string clientId: ""
     property string output: ""
+    property int generation: 0
     command: VaultModel.apiKeySecretLookupCommand()
     stdout: SplitParser {
       onRead: function(line) { apiKeySecretLookup.output += String(line || "") }
@@ -512,8 +586,10 @@ Item {
     onExited: {
       var id = apiKeySecretLookup.clientId
       var secret = apiKeySecretLookup.output
+      var requestGeneration = apiKeySecretLookup.generation
       apiKeySecretLookup.clientId = ""
       apiKeySecretLookup.output = ""
+      if (requestGeneration !== service.generation) return
       service.finishStoredUnlock(id, String(secret || "").trim())
     }
   }
@@ -522,22 +598,31 @@ Item {
 
   Process {
     id: statusProc
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
       id: statusOut
       waitForEnd: true
     }
-    onExited: service.onStatusOutput(statusOut.text)
+    onExited: {
+      if (statusProc.generation === service.generation) service.onStatusOutput(statusOut.text)
+    }
   }
 
   Process {
     id: loginProc
+    property int generation: 0
     stderr: StdioCollector {
       id: loginErr
       waitForEnd: true
     }
     onExited: function(exitCode) {
       var err = String(loginErr.text || "").trim()
+      var requestGeneration = loginProc.generation
+      if (requestGeneration !== service.generation) {
+        loginProc.environment = ({})
+        return
+      }
       if (exitCode === 0) {
         service.error = ""
         // The API-key login leaves the vault locked; the unlock that follows
@@ -554,6 +639,7 @@ Item {
   Process {
     id: unlockProc
     property string output: ""
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
     stdout: SplitParser {
       onRead: function(line) { unlockProc.output += String(line || "") }
@@ -564,7 +650,12 @@ Item {
     }
     onExited: function(exitCode) {
       var session = unlockProc.output
+      var requestGeneration = unlockProc.generation
       unlockProc.output = ""
+      if (requestGeneration !== service.generation) {
+        unlockProc.environment = VaultModel.nonInteractiveEnvironment()
+        return
+      }
       if (exitCode === 0) service.onUnlockSuccess(session)
       else service.failAuthentication(String(unlockErr.text || "").trim() || "Unlock failed")
     }
@@ -648,9 +739,45 @@ Item {
   }
 
   Process {
-    id: lockProc
+    id: totpProc
+    property string token: ""
+    property string output: ""
+    property string errorOutput: ""
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
-    onExited: lockProc.environment = VaultModel.nonInteractiveEnvironment()
+    stdout: SplitParser {
+      onRead: function(line) { totpProc.output += String(line || "") }
+    }
+    stderr: SplitParser {
+      onRead: function(line) { totpProc.errorOutput += String(line || "") + "\n" }
+    }
+    onExited: function(exitCode) {
+      var token = totpProc.token
+      var code = String(totpProc.output || "").trim()
+      var err = String(totpProc.errorOutput || "").trim()
+      var requestGeneration = totpProc.generation
+      totpProc.token = ""
+      totpProc.output = ""
+      totpProc.errorOutput = ""
+      totpProc.environment = VaultModel.nonInteractiveEnvironment()
+      if (requestGeneration !== service.generation) return
+      if (exitCode !== 0 || !code) {
+        service.totpFetchFailed(token, err || "Could not read one-time code")
+        return
+      }
+      service.totpFetched(token, code)
+    }
+  }
+
+  Process {
+    id: lockProc
+    property int generation: 0
+    environment: VaultModel.nonInteractiveEnvironment()
+    onExited: {
+      var requestGeneration = lockProc.generation
+      lockProc.environment = VaultModel.nonInteractiveEnvironment()
+      if (requestGeneration === service.generation) service.fetchGlobalStatus()
+    }
   }
 
   // -- clipboard processes ---------------------------------------------------
@@ -669,6 +796,7 @@ Item {
       stdinEnabled = false
     }
     onExited: {
+      payload = ""
       if (!queuedPayload) return
       var next = queuedPayload
       queuedPayload = ""

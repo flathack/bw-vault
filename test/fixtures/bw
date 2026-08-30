@@ -31,7 +31,9 @@ unlock)
   touch "$state/authed" "$state/unlocked"
   printf 'demo-session-token-not-real\n' ;;
 lock)
-  rm -f "$state/unlocked"; echo "Your vault is locked." ;;
+  # Deliberately delayed so runtime tests catch status checks that race ahead
+  # of the lock child and observe the old unlocked state.
+  sleep "$delay"; sleep "$delay"; rm -f "$state/unlocked"; echo "Your vault is locked." ;;
 list)
   sleep "$delay"
   [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }
@@ -39,8 +41,18 @@ list)
 get)
   sleep "$delay"
   [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }
-  jq -e --arg id "${3:-}" 'map(select(.id == $id))[0] // empty' "$vault" ||
-    { echo "Not found." >&2; exit 1; } ;;
+  case "${2:-}" in
+  item)
+    jq -e --arg id "${3:-}" 'map(select(.id == $id))[0] // empty' "$vault" ||
+      { echo "Not found." >&2; exit 1; }
+    ;;
+  totp)
+    jq -er --arg id "${3:-}" 'map(select(.id == $id and ((.login.totp // "") != "")))[0] | if . then "123456" else error("No TOTP") end' "$vault" ||
+      { echo "No TOTP." >&2; exit 1; }
+    ;;
+  *) echo "Unsupported get object." >&2; exit 1 ;;
+  esac
+  ;;
 *)
   echo "bw fixture: unsupported command: ${1:-}" >&2; exit 1 ;;
 esac

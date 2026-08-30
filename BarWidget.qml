@@ -95,11 +95,15 @@ Panel {
   property string pendingIntent: ""
   property string pendingLabel: ""
   property int fetchSeq: 0
+  property string pendingTotpToken: ""
+  property int totpSeq: 0
 
-  // The one open item. Holds a password for as long as the detail screen is
-  // showing it, and no longer — see leaveDetail().
+  // The one open item. Holds a password and current TOTP code for as long as
+  // the detail screen is showing them, and no longer — see leaveDetail().
   property var detail: null
   property string detailPassword: ""
+  property string detailTotp: ""
+  property string detailTotpError: ""
   property bool showPass: false
 
   property string notice: ""
@@ -151,6 +155,9 @@ Panel {
   function leaveDetail() {
     root.detail = null
     root.detailPassword = ""
+    root.detailTotp = ""
+    root.detailTotpError = ""
+    root.pendingTotpToken = ""
     root.showPass = false
     root.screen = "list"
     Qt.callLater(function() {
@@ -234,6 +241,9 @@ Panel {
       root.screen = "detail"
       root.detail = null
       root.detailPassword = ""
+      root.detailTotp = ""
+      root.detailTotpError = ""
+      root.pendingTotpToken = ""
       root.showPass = false
     }
     root.svc.fetchItem(item.id, root.pendingToken)
@@ -246,6 +256,24 @@ Panel {
     }
     if (root.svc) root.svc.copyValue(root.detailPassword)
     root.say("Copied password", false)
+  }
+
+  function refreshDetailTotp() {
+    if (!root.detail || root.detail.hasTotp !== true || !root.svc) return
+    if (root.pendingTotpToken !== "") return
+    root.detailTotp = ""
+    root.detailTotpError = ""
+    root.pendingTotpToken = "bar-totp:" + (++root.totpSeq)
+    root.svc.fetchTotp(root.detail.id, root.pendingTotpToken)
+  }
+
+  function copyDetailTotp() {
+    if (!root.detailTotp) {
+      root.say(root.pendingTotpToken !== "" ? "One-time code is still loading" : "No one-time code available", true)
+      return
+    }
+    if (root.svc) root.svc.copyValue(root.detailTotp)
+    root.say("Copied one-time code", false)
   }
 
   function say(message, isError) {
@@ -276,7 +304,10 @@ Panel {
       if (intent === "detail") {
         root.detail = item
         root.detailPassword = String(password || "")
+        root.detailTotp = ""
+        root.detailTotpError = ""
         root.notice = ""
+        if (item && item.hasTotp === true) root.refreshDetailTotp()
         return
       }
       if (!item || !password) {
@@ -296,6 +327,22 @@ Panel {
       if (intent === "detail") root.screen = "list"
       root.say(message || "Could not read item", true)
       noticeTimer.restart()
+    }
+
+    function onTotpFetched(token, code) {
+      if (token !== root.pendingTotpToken) return
+      root.pendingTotpToken = ""
+      if (root.screen !== "detail" || !root.detail || root.detail.hasTotp !== true) return
+      root.detailTotp = String(code || "")
+      root.detailTotpError = ""
+    }
+
+    function onTotpFetchFailed(token, message) {
+      if (token !== root.pendingTotpToken) return
+      root.pendingTotpToken = ""
+      if (root.screen !== "detail") return
+      root.detailTotp = ""
+      root.detailTotpError = String(message || "Could not read one-time code")
     }
 
     function onItemsRefreshed() {
@@ -326,6 +373,9 @@ Panel {
       root.pendingIntent = ""
       root.detail = null
       root.detailPassword = ""
+      root.detailTotp = ""
+      root.detailTotpError = ""
+      root.pendingTotpToken = ""
       root.showPass = false
       root.screen = "unlock"
       if (root.opened) {
@@ -362,6 +412,9 @@ Panel {
       root.pendingIntent = ""
       root.detail = null
       root.detailPassword = ""
+      root.detailTotp = ""
+      root.detailTotpError = ""
+      root.pendingTotpToken = ""
       root.showPass = false
       root.notice = ""
     }
@@ -488,6 +541,8 @@ Panel {
         if (t === "p" || t === "P") root.showPass = !root.showPass
         else if (t === "c" || t === "C") root.copyUsername(root.detail)
         else if (t === "y" || t === "Y") root.copyDetailPassword()
+        else if (t === "o" || t === "O") root.copyDetailTotp()
+        else if (t === "r" || t === "R") root.refreshDetailTotp()
       }
 
       Column {
@@ -727,6 +782,15 @@ Panel {
           }
 
           DetailField {
+            label: "ONE-TIME CODE"
+            value: root.detail && root.detail.hasTotp === true
+              ? (root.pendingTotpToken !== ""
+                  ? "Loading…"
+                  : (root.detailTotp !== "" ? root.detailTotp : (root.detailTotpError || "Unavailable")))
+              : ""
+          }
+
+          DetailField {
             label: "URI"
             value: root.detail && root.detail.uris && root.detail.uris.length > 0
               ? String(root.detail.uris[0])
@@ -744,7 +808,11 @@ Panel {
             width: parent.width
             text: root.notice !== ""
               ? root.notice
-              : (root.detail ? "p reveal · c user · y password · ctrl+l lock · esc back" : "Fetching…")
+              : (root.detail
+                  ? (root.detail.hasTotp === true
+                      ? "p reveal · c user · y password · o otp · r refresh · ctrl+l lock · esc back"
+                      : "p reveal · c user · y password · ctrl+l lock · esc back")
+                  : "Fetching…")
             color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : root.fainter
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -753,6 +821,14 @@ Panel {
         }
       }
     }
+  }
+
+  Timer {
+    id: totpRefreshTimer
+    interval: 30000
+    repeat: true
+    running: root.opened && root.screen === "detail" && root.detail && root.detail.hasTotp === true
+    onTriggered: root.refreshDetailTotp()
   }
 
   // One labelled row on the detail screen. Hidden when the item has nothing
