@@ -137,6 +137,17 @@ Panel {
     root.screen = root.unlocked ? "list" : "unlock"
   }
 
+  // KeyboardPanel applies focusTarget only when the panel opens. Switching
+  // from the list to detail while it is already open otherwise leaves the
+  // hidden search field focused: its Esc handler closes the whole panel and
+  // p/c/y never reach PanelKeyCatcher.
+  function focusCurrentScreen() {
+    if (!root.opened) return
+    if (root.screen === "detail") keyCatcher.forceActiveFocus()
+    else if (root.screen === "list" && root.unlocked) searchField.forceActiveFocus()
+    else if (root.screen === "unlock" && root.status !== "checking") passField.forceActiveFocus()
+  }
+
   function leaveDetail() {
     root.detail = null
     root.detailPassword = ""
@@ -359,6 +370,7 @@ Panel {
   onQueryChanged: root.rebuild()
   onItemsChanged: if (root.opened) root.rebuild()
   onUnlockedChanged: if (root.opened) root.syncScreen()
+  onScreenChanged: Qt.callLater(function() { root.focusCurrentScreen() })
 
   // Everything here filters metadata that is already in this process. Nothing
   // reads, fetches or copies a secret — a password still costs a keystroke on a
@@ -454,7 +466,9 @@ Panel {
       // A focused text field owns every key. On the detail screen there is no
       // field, so the single-letter shortcuts below are safe there and only
       // there.
-      blocked: searchField.activeFocus || passField.activeFocus
+      // A field may retain activeFocus for one event-loop turn after becoming
+      // hidden. Detail navigation must win during that transition as well.
+      blocked: root.screen !== "detail" && (searchField.activeFocus || passField.activeFocus)
 
       onCloseRequested: root.screen === "detail" ? root.leaveDetail() : root.close()
       onMoveRequested: function(dx, dy) {
