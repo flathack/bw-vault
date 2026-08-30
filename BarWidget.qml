@@ -209,6 +209,10 @@ Panel {
   // seconds cold. The panel says it is fetching rather than pretending the copy
   // already happened.
   function fetchSelected(intent) {
+    if (root.pendingToken !== "") {
+      root.say("Another item is still loading", true)
+      return
+    }
     var item = root.selectedItem
     if (!item || !root.svc) return
     root.pendingToken = "bar:" + (++root.fetchSeq)
@@ -252,7 +256,7 @@ Panel {
     // The password lands here and goes no further than this widget: to the
     // clipboard, or onto the detail screen for as long as it is showing. The
     // service never assigned it to anything.
-    function onItemFetched(token, item) {
+    function onItemFetched(token, item, password) {
       if (token !== root.pendingToken) return
       var intent = root.pendingIntent
       root.pendingToken = ""
@@ -260,15 +264,15 @@ Panel {
 
       if (intent === "detail") {
         root.detail = item
-        root.detailPassword = item ? item.password : ""
+        root.detailPassword = String(password || "")
         root.notice = ""
         return
       }
-      if (!item || !item.password) {
+      if (!item || !password) {
         root.say("No password on " + root.pendingLabel + " — ctrl+enter for details", true)
         return
       }
-      root.svc.copyValue(item.password)
+      root.svc.copyValue(password)
       root.say("Copied password · " + root.pendingLabel, false)
       noticeTimer.restart()
     }
@@ -295,6 +299,12 @@ Panel {
     function onUnlockSucceeded() {
       passField.text = ""
       root.masterPassword = ""
+    }
+
+    function onAuthFailed() {
+      passField.text = ""
+      root.masterPassword = ""
+      if (root.opened) Qt.callLater(function() { passField.forceActiveFocus() })
     }
 
     function onLockedOut(reason) {
@@ -417,6 +427,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       visible: root.showCount && root.unlocked && root.itemsLoaded && !root.vertical
       text: String(root.items.length)
       color: root.barForeground
@@ -476,6 +487,7 @@ Panel {
           implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, lockButton.size)
 
           Text {
+            textFormat: Text.PlainText
             id: heroIcon
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
@@ -512,6 +524,7 @@ Panel {
             spacing: Style.space(2)
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: root.screen === "detail" && root.detail ? root.detail.name : "BW Vault"
               color: root.foreground
@@ -522,6 +535,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: (root.screen === "detail"
                 ? (root.detail ? String(root.detail.type).toUpperCase() : "OPENING…")
@@ -555,6 +569,7 @@ Panel {
             spacing: Style.space(8)
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: "This machine has no Bitwarden API key stored yet. Run this in a terminal, once:"
               color: root.dim
@@ -564,6 +579,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: "bw-vault-setup"
               color: Color.accent
@@ -587,6 +603,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             // No password field on screen means no key to press — saying
             // "enter to unlock" under a form that isn't there is just noise.
@@ -650,6 +667,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: root.results.length === 0
             width: parent.width
             text: !root.itemsLoaded
@@ -662,6 +680,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.notice !== "" ? root.notice : "enter copy · ctrl+u user · ctrl+enter open"
             color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : root.fainter
@@ -707,6 +726,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: root.notice !== ""
               ? root.notice
@@ -734,6 +754,7 @@ Panel {
     spacing: Style.space(2)
 
     Text {
+      textFormat: Text.PlainText
       width: parent.width
       text: field.label
       color: root.fainter
@@ -744,6 +765,7 @@ Panel {
     }
 
     Text {
+      textFormat: Text.PlainText
       width: parent.width
       text: field.value
       color: root.foreground
@@ -779,6 +801,7 @@ Panel {
       implicitHeight: Math.max(rowGlyph.implicitHeight, info.implicitHeight)
 
       Text {
+        textFormat: Text.PlainText
         id: rowGlyph
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
@@ -797,6 +820,7 @@ Panel {
         anchors.verticalCenter: parent.verticalCenter
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width
           text: row.modelData.name || "(no name)"
           color: row.current ? Color.accent : row.foreground
@@ -806,6 +830,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: String(row.modelData.username || "") !== ""
           width: parent.width
           text: row.modelData.username
