@@ -118,6 +118,7 @@ Item {
     service.status = "checking"
     service.busy = true
     sessionLookup.output = ""
+    sessionLookup.generation = service.generation
     sessionLookup.running = true
   }
 
@@ -155,6 +156,7 @@ Item {
   function fetchGlobalStatus() {
     service.status = "checking"
     service.busy = true
+    statusProc.generation = service.generation
     statusProc.command = VaultModel.statusCommand()
     statusProc.running = true
   }
@@ -196,6 +198,7 @@ Item {
       // successful login does not need the password passed in a second time.
       unlockProc.environment = VaultModel.passwordEnvironment(masterPassword)
       unlockProc.output = ""
+      loginProc.generation = service.generation
       loginProc.running = true
       return
     }
@@ -204,6 +207,7 @@ Item {
     unlockProc.environment = VaultModel.passwordEnvironment(masterPassword)
     unlockProc.output = ""
     unlockProc.command = VaultModel.unlockCommand()
+    unlockProc.generation = service.generation
     unlockProc.running = true
   }
 
@@ -211,7 +215,7 @@ Item {
   // has to ask for the master password. On a machine with no key stored this
   // is refused rather than half-attempted: `bw-vault-setup` is the way in.
   function unlockWithStored(masterPassword) {
-    if (service.busy && service.authPhase !== "") return
+    if (service.busy) return
     if (service.status !== "unauthenticated") {
       service.unlock("", "", masterPassword)
       return
@@ -223,6 +227,7 @@ Item {
     service.error = ""
     service.busy = true
     service.pendingMaster = masterPassword
+    apiKeyIdLookup.generation = service.generation
     apiKeyIdLookup.running = true
   }
 
@@ -242,6 +247,7 @@ Item {
     service.authPhase = "unlock"
     unlockProc.output = ""
     unlockProc.command = VaultModel.unlockCommand()
+    unlockProc.generation = service.generation
     unlockProc.running = true
   }
 
@@ -258,7 +264,7 @@ Item {
   function clearSessionEnvironments() {
     listProc.environment = VaultModel.nonInteractiveEnvironment()
     getProc.environment = VaultModel.nonInteractiveEnvironment()
-    lockProc.environment = VaultModel.nonInteractiveEnvironment()
+    if (!lockProc.running) lockProc.environment = VaultModel.nonInteractiveEnvironment()
   }
 
   function failAuthentication(message) {
@@ -284,6 +290,7 @@ Item {
     // write an empty session if a lock landed in between. stdin is re-opened so
     // the previous run's EOF has not left the write channel closed.
     sessionStore.payload = session
+    sessionStore.clearAfterExit = false
     sessionStore.stdinEnabled = true
     sessionStore.running = true
     service.unlockSucceeded()
@@ -346,15 +353,32 @@ Item {
   // -- lock ------------------------------------------------------------------
 
   function lock() {
+    var startCliLock = !lockProc.running && (service.unlocked || service.heldSession !== "")
+    var waitForCliLock = lockProc.running || startCliLock
     service.generation++
+    if (apiKeyIdLookup.running) apiKeyIdLookup.running = false
+    if (apiKeySecretLookup.running) apiKeySecretLookup.running = false
+    if (loginProc.running) loginProc.running = false
+    if (unlockProc.running) unlockProc.running = false
+    apiKeySecretLookup.clientId = ""
+    apiKeySecretLookup.output = ""
+    unlockProc.output = ""
     if (listProc.running) listProc.running = false
     if (getProc.running) getProc.running = false
-    if (service.heldSession) {
+    if (lockProc.running) {
+      lockProc.generation = service.generation
+    } else if (startCliLock) {
+      lockProc.generation = service.generation
       lockProc.command = VaultModel.lockCommand()
       lockProc.environment = VaultModel.sessionEnvironment(service.heldSession)
       lockProc.running = true
     }
-    sessionClear.running = true
+    if (sessionStore.running) {
+      sessionStore.clearAfterExit = true
+      sessionStore.running = false
+    } else {
+      sessionClear.running = true
+    }
     copyProc.queuedPayload = ""
     service.requestClipboardClear()
     service.heldSession = ""
@@ -368,7 +392,7 @@ Item {
     service.clearAuthEnvironment()
     service.clearSessionEnvironments()
     service.lockedOut("locked")
-    service.fetchGlobalStatus()
+    if (!waitForCliLock) service.fetchGlobalStatus()
   }
 
   // A session that turned out to be dead. Same teardown as lock(), minus the
@@ -442,14 +466,16 @@ Item {
   Process {
     id: sessionLookup
     property string output: ""
+    property int generation: 0
     command: VaultModel.sessionLookupCommand()
     stdout: SplitParser {
       onRead: function(line) { sessionLookup.output += String(line || "") }
     }
     onExited: {
       var value = sessionLookup.output
+      var requestGeneration = sessionLookup.generation
       sessionLookup.output = ""
-      service.onSessionLookup(value)
+      if (requestGeneration === service.generation) service.onSessionLookup(value)
     }
   }
 
@@ -457,6 +483,7 @@ Item {
     id: sessionStore
     // Snapshotted by the caller before running; see onUnlockSuccess.
     property string payload: ""
+    property bool clearAfterExit: false
     command: VaultModel.sessionStoreCommand()
     stdinEnabled: true
     onStarted: {
@@ -466,6 +493,14 @@ Item {
       // Quickshell's Process never closes the write channel on its own, so
       // without this the store would block forever and never persist.
       stdinEnabled = false
+    }
+    onExited: {
+      payload = ""
+      stdinEnabled = false
+      if (clearAfterExit) {
+        clearAfterExit = false
+        sessionClear.running = true
+      }
     }
   }
 
@@ -489,14 +524,17 @@ Item {
 
   Process {
     id: apiKeyIdLookup
+    property int generation: 0
     command: VaultModel.apiKeyIdLookupCommand()
     stdout: StdioCollector {
       id: apiKeyIdLookupOut
       waitForEnd: true
     }
     onExited: {
+      if (apiKeyIdLookup.generation !== service.generation) return
       apiKeySecretLookup.clientId = String(apiKeyIdLookupOut.text || "").trim()
       apiKeySecretLookup.output = ""
+      apiKeySecretLookup.generation = apiKeyIdLookup.generation
       apiKeySecretLookup.running = true
     }
   }
@@ -505,6 +543,7 @@ Item {
     id: apiKeySecretLookup
     property string clientId: ""
     property string output: ""
+    property int generation: 0
     command: VaultModel.apiKeySecretLookupCommand()
     stdout: SplitParser {
       onRead: function(line) { apiKeySecretLookup.output += String(line || "") }
@@ -512,8 +551,10 @@ Item {
     onExited: {
       var id = apiKeySecretLookup.clientId
       var secret = apiKeySecretLookup.output
+      var requestGeneration = apiKeySecretLookup.generation
       apiKeySecretLookup.clientId = ""
       apiKeySecretLookup.output = ""
+      if (requestGeneration !== service.generation) return
       service.finishStoredUnlock(id, String(secret || "").trim())
     }
   }
@@ -522,22 +563,31 @@ Item {
 
   Process {
     id: statusProc
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
     stdout: StdioCollector {
       id: statusOut
       waitForEnd: true
     }
-    onExited: service.onStatusOutput(statusOut.text)
+    onExited: {
+      if (statusProc.generation === service.generation) service.onStatusOutput(statusOut.text)
+    }
   }
 
   Process {
     id: loginProc
+    property int generation: 0
     stderr: StdioCollector {
       id: loginErr
       waitForEnd: true
     }
     onExited: function(exitCode) {
       var err = String(loginErr.text || "").trim()
+      var requestGeneration = loginProc.generation
+      if (requestGeneration !== service.generation) {
+        loginProc.environment = ({})
+        return
+      }
       if (exitCode === 0) {
         service.error = ""
         // The API-key login leaves the vault locked; the unlock that follows
@@ -554,6 +604,7 @@ Item {
   Process {
     id: unlockProc
     property string output: ""
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
     stdout: SplitParser {
       onRead: function(line) { unlockProc.output += String(line || "") }
@@ -564,7 +615,12 @@ Item {
     }
     onExited: function(exitCode) {
       var session = unlockProc.output
+      var requestGeneration = unlockProc.generation
       unlockProc.output = ""
+      if (requestGeneration !== service.generation) {
+        unlockProc.environment = VaultModel.nonInteractiveEnvironment()
+        return
+      }
       if (exitCode === 0) service.onUnlockSuccess(session)
       else service.failAuthentication(String(unlockErr.text || "").trim() || "Unlock failed")
     }
@@ -649,8 +705,13 @@ Item {
 
   Process {
     id: lockProc
+    property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
-    onExited: lockProc.environment = VaultModel.nonInteractiveEnvironment()
+    onExited: {
+      var requestGeneration = lockProc.generation
+      lockProc.environment = VaultModel.nonInteractiveEnvironment()
+      if (requestGeneration === service.generation) service.fetchGlobalStatus()
+    }
   }
 
   // -- clipboard processes ---------------------------------------------------
@@ -669,6 +730,7 @@ Item {
       stdinEnabled = false
     }
     onExited: {
+      payload = ""
       if (!queuedPayload) return
       var next = queuedPayload
       queuedPayload = ""

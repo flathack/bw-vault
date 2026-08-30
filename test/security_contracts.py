@@ -68,4 +68,17 @@ for process_name in ("listProc", "getProc", "lockProc"):
         f"{process_name} must clear its BW_SESSION environment",
     )
 
+require(
+    'if (!waitForCliLock) service.fetchGlobalStatus()' in service,
+    "lock must not query status until the CLI lock child exits",
+)
+require(
+    "if (requestGeneration === service.generation) service.fetchGlobalStatus()" in service,
+    "the lock child must refresh status only for the active generation",
+)
+require(
+    "property bool clearAfterExit: false" in service and "sessionStore.clearAfterExit = true" in service,
+    "locking must serialize session-store termination before keyring clear",
+)
+
 print("Security contract tests passed")
