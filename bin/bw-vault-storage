@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Endpoint registry and encrypted offline snapshot. No secret is printed by management commands."""
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from cryptography.fernet import Fernet, InvalidToken
+
+SERVICE = "com.aktivesolutions.bw-vault"
+BASE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "bw-vault"
+REGISTRY = BASE / "endpoints.json"
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def read_registry():
+    try:
+        data = json.loads(REGISTRY.read_text())
+        if isinstance(data, dict) and isinstance(data.get("endpoints"), list):
+            return data
+    except (OSError, ValueError):
+        pass
+    return {"selected": "default", "endpoints": [{"id": "default", "name": "Default", "url": ""}]}
+
+
+def write_registry(data):
+    BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(BASE, 0o700)
+    fd, tmp = tempfile.mkstemp(dir=BASE)
+    try:
+        with os.fdopen(fd, "w") as out:
+            json.dump(data, out)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, REGISTRY)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def endpoint(data, ident):
+    return next((e for e in data["endpoints"] if e["id"] == ident), None)
+
+
+def key(ident, create=False):
+    account = "offline-cache-" + ident
+    found = subprocess.run(["secret-tool", "lookup", "service", SERVICE, "account", account], capture_output=True)
+    if found.returncode == 0 and found.stdout.strip():
+        return found.stdout.strip()
+    if not create:
+        return None
+    value = Fernet.generate_key()
+    stored = subprocess.run(["secret-tool", "store", "--label=BW Vault offline cache", "service", SERVICE, "account", account], input=value, capture_output=True)
+    if stored.returncode:
+        fail("Offline cache unavailable: keyring could not store its key")
+    return value
+
+
+def cache_path(ident):
+    return BASE / ("cache-" + ident + ".enc")
+
+
+def cache_read(ident):
+    try:
+        secret = key(ident)
+        if secret:
+            return json.loads(Fernet(secret).decrypt(cache_path(ident).read_bytes()))
+    except (OSError, ValueError, InvalidToken):
+        pass
+    return None
+
+
+def cache_write(ident, items):
+    secret = key(ident, True)
+    BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=BASE)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(Fernet(secret).encrypt(json.dumps(items).encode()))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, cache_path(ident))
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        fail("usage: bw-vault-storage <list|add|remove|select|snapshot|read>")
+    data = read_registry()
+    action = args.pop(0)
+    if action == "list" and not args:
+        print(json.dumps(data))
+    elif action == "add" and len(args) == 2:
+        name, url = args
+        if not name.strip() or not re.fullmatch(r"https?://[^\s/]+(?::\d+)?/?", url):
+            fail("Name and an HTTP(S) server URL are required")
+        ident = secrets.token_hex(8)
+        directory = BASE / "cli" / ident
+        directory.mkdir(mode=0o700, parents=True)
+        os.chmod(directory, 0o700)
+        env = dict(os.environ, BITWARDENCLI_APPDATA_DIR=str(directory), BW_NOINTERACTION="true")
+        result = subprocess.run(["bw", "config", "server", url], env=env, capture_output=True)
+        if result.returncode:
+            fail("Could not configure the endpoint")
+        data["endpoints"].append({"id": ident, "name": name.strip(), "url": url.rstrip("/")})
+        data["selected"] = ident
+        write_registry(data)
+        print(ident)
+    elif action == "select" and len(args) == 1:
+        if not endpoint(data, args[0]):
+            fail("Unknown endpoint")
+        data["selected"] = args[0]
+        write_registry(data)
+    elif action == "remove" and len(args) == 1:
+        ident = args[0]
+        if ident == "default" or not endpoint(data, ident):
+            fail("This endpoint cannot be removed")
+        data["endpoints"] = [e for e in data["endpoints"] if e["id"] != ident]
+        if data["selected"] == ident:
+            data["selected"] = "default"
+        write_registry(data)
+        cache_path(ident).unlink(missing_ok=True)
+        for account in ("offline-cache", "bw-session", "bw-client-id", "bw-client-secret"):
+            subprocess.run(["secret-tool", "clear", "service", SERVICE, "account", account + "-" + ident], capture_output=True)
+        shutil.rmtree(BASE / "cli" / ident)
+    elif action == "snapshot" and len(args) == 1:
+        ident = args[0]
+        items = json.load(sys.stdin)
+        if not isinstance(items, list) or not endpoint(data, ident):
+            fail("Invalid snapshot")
+        minimized = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            login = item.get("login") or {}
+            minimized.append({"id": item.get("id", ""), "name": item.get("name", ""),
+                              "type": item.get("type", 0), "notes": item.get("notes", ""),
+                              "login": {"username": login.get("username", ""),
+                                        "password": login.get("password", ""),
+                                        "uris": login.get("uris") or [],
+                                        "hasTotp": bool(login.get("totp"))}})
+        cache_write(ident, minimized)
+    elif action == "read" and len(args) == 2:
+        ident, kind = args
+        items = cache_read(ident)
+        if items is None:
+            fail("No offline cache available")
+        if kind == "list":
+            print(json.dumps([{"id": i.get("id", ""), "name": i.get("name", ""), "type": i.get("type", 0), "username": (i.get("login") or {}).get("username", ""), "uris": (i.get("login") or {}).get("uris") or []} for i in items]))
+        else:
+            item = next((i for i in items if i.get("id") == kind), None)
+            if item is None:
+                fail("Item not in offline cache")
+            login = item.get("login") or {}
+            print(json.dumps({"id": item.get("id", ""), "name": item.get("name", ""), "type": item.get("type", 0), "username": login.get("username", ""), "password": login.get("password", ""), "hasTotp": login.get("hasTotp") is True, "notes": item.get("notes", ""), "uris": login.get("uris") or []}))
+    else:
+        fail("Invalid command")
+
+
+if __name__ == "__main__":
+    main()

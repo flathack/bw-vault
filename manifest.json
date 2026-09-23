@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "com.aktivesolutions.bw-vault",
   "name": "BW Vault",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "author": "keboy",
   "license": "MIT",
-  "description": "Bitwarden vault in the Omarchy bar, powered by the bw CLI. Search the vault, copy credentials, and view current one-time codes without leaving the active workspace.",
+  "description": "Bitwarden vault in the Omarchy bar with multiple server endpoints and an encrypted offline copy.",
   "kinds": [
     "service",
     "bar-widget"

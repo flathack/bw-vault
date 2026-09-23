@@ -44,6 +44,13 @@ Item {
   // never into services, so the widget is the only place that sees them.
   property var settings: ({})
 
+  function localCommand(args) {
+    if (!args || !args.length) return args
+    if (args[0] === "bw-vault-cli" || args[0] === "bw-vault-secret")
+      return [service.pluginPath + "/bin/" + args[0]].concat(args.slice(1))
+    return args
+  }
+
   // -- observable state ------------------------------------------------------
 
   // "checking" | "unlocked" | "locked" | "unauthenticated"
@@ -52,6 +59,7 @@ Item {
   property string authPhase: ""
   property bool busy: false
   property string error: ""
+  property bool offline: false
 
   // Metadata only. See parseList() — no passwords pass through here.
   property var items: []
@@ -161,16 +169,15 @@ Item {
     service.status = "checking"
     service.busy = true
     statusProc.generation = service.generation
-    statusProc.command = VaultModel.statusCommand()
+    statusProc.command = service.localCommand(VaultModel.statusCommand())
     statusProc.running = true
   }
 
   function onStatusOutput(raw) {
     var st = VaultModel.parseStatus(raw)
     if (!st) {
-      service.error = "Could not read bw status"
-      service.status = "unauthenticated"
-      service.busy = false
+      service.error = "Vault unavailable. Reconnect or use a saved offline copy."
+      service.loadItems(false)
       return
     }
     if (st.unlocked) {
@@ -195,7 +202,7 @@ Item {
 
     if (service.status === "unauthenticated") {
       service.authPhase = "login"
-      loginProc.command = VaultModel.apikeyLoginCommand()
+      loginProc.command = service.localCommand(VaultModel.apikeyLoginCommand())
       loginProc.environment = VaultModel.apikeyLoginEnvironment(
         String(clientId || "").trim(), clientSecret, masterPassword)
       // Held only until the login child exits, so the unlock that follows a
@@ -210,7 +217,7 @@ Item {
     service.authPhase = "unlock"
     unlockProc.environment = VaultModel.passwordEnvironment(masterPassword)
     unlockProc.output = ""
-    unlockProc.command = VaultModel.unlockCommand()
+    unlockProc.command = service.localCommand(VaultModel.unlockCommand())
     unlockProc.generation = service.generation
     unlockProc.running = true
   }
@@ -250,7 +257,7 @@ Item {
   function runUnlock() {
     service.authPhase = "unlock"
     unlockProc.output = ""
-    unlockProc.command = VaultModel.unlockCommand()
+    unlockProc.command = service.localCommand(VaultModel.unlockCommand())
     unlockProc.generation = service.generation
     unlockProc.running = true
   }
@@ -275,7 +282,10 @@ Item {
   }
 
   function failAuthentication(message) {
-    service.error = String(message || "Authentication failed")
+    var raw = String(message || "")
+    service.error = /502|503|504|ECONN|ENOTFOUND|ServerConfig|fetch failed/i.test(raw)
+      ? "Vault server unavailable. Try the offline copy or reconnect."
+      : (raw.split("\n")[0].slice(0, 180) || "Authentication failed")
     service.busy = false
     service.authPhase = ""
     service.clearAuthEnvironment()
@@ -399,7 +409,7 @@ Item {
       lockProc.generation = service.generation
     } else if (startCliLock) {
       lockProc.generation = service.generation
-      lockProc.command = VaultModel.lockCommand()
+      lockProc.command = service.localCommand(VaultModel.lockCommand())
       lockProc.environment = VaultModel.sessionEnvironment(service.heldSession)
       lockProc.running = true
     }
@@ -418,6 +428,7 @@ Item {
     service.itemsLoaded = false
     cacheTimer.stop()
     service.status = "locked"
+    service.offline = false
     service.error = ""
     service.busy = false
     service.authPhase = ""
@@ -501,7 +512,7 @@ Item {
     id: sessionLookup
     property string output: ""
     property int generation: 0
-    command: VaultModel.sessionLookupCommand()
+    command: service.localCommand(VaultModel.sessionLookupCommand())
     stdout: SplitParser {
       onRead: function(line) { sessionLookup.output += String(line || "") }
     }
@@ -518,7 +529,7 @@ Item {
     // Snapshotted by the caller before running; see onUnlockSuccess.
     property string payload: ""
     property bool clearAfterExit: false
-    command: VaultModel.sessionStoreCommand()
+    command: service.localCommand(VaultModel.sessionStoreCommand())
     stdinEnabled: true
     onStarted: {
       write(payload + "\n")
@@ -541,7 +552,7 @@ Item {
 
   Process {
     id: sessionClear
-    command: VaultModel.sessionClearCommand()
+    command: service.localCommand(VaultModel.sessionClearCommand())
   }
 
   // The client id is not a secret, so it can be read at startup to answer "is
@@ -549,7 +560,7 @@ Item {
   // only ever read in the moment it is handed to `bw login`.
   Process {
     id: apiKeyIdProbe
-    command: VaultModel.apiKeyIdLookupCommand()
+    command: service.localCommand(VaultModel.apiKeyIdLookupCommand())
     stdout: StdioCollector {
       id: apiKeyIdProbeOut
       waitForEnd: true
@@ -560,7 +571,7 @@ Item {
   Process {
     id: apiKeyIdLookup
     property int generation: 0
-    command: VaultModel.apiKeyIdLookupCommand()
+    command: service.localCommand(VaultModel.apiKeyIdLookupCommand())
     stdout: StdioCollector {
       id: apiKeyIdLookupOut
       waitForEnd: true
@@ -579,7 +590,7 @@ Item {
     property string clientId: ""
     property string output: ""
     property int generation: 0
-    command: VaultModel.apiKeySecretLookupCommand()
+    command: service.localCommand(VaultModel.apiKeySecretLookupCommand())
     stdout: SplitParser {
       onRead: function(line) { apiKeySecretLookup.output += String(line || "") }
     }
@@ -600,6 +611,9 @@ Item {
     id: statusProc
     property int generation: 0
     environment: VaultModel.nonInteractiveEnvironment()
+    stderr: StdioCollector {
+      waitForEnd: true
+    }
     stdout: StdioCollector {
       id: statusOut
       waitForEnd: true
@@ -688,14 +702,18 @@ Item {
       // longer exists.
       if (requestGeneration !== service.generation) return
       if (exitCode !== 0) {
+        service.offline = false
         if (speculative) {
           service.sessionDied()
           return
         }
-        service.error = err || "Could not list items"
+        service.error = "Vault unavailable and no offline copy is ready"
         service.busy = false
         return
       }
+      service.offline = err.indexOf("BW_VAULT_OFFLINE") !== -1
+      service.error = service.offline ? "Using encrypted offline copy"
+        : (err.indexOf("BW_VAULT_CACHE_FAILED") !== -1 ? "Offline copy could not be updated" : "")
       service.onListOutput(raw)
     }
   }
@@ -724,9 +742,10 @@ Item {
       getProc.environment = VaultModel.nonInteractiveEnvironment()
       if (requestGeneration !== service.generation) return
       if (exitCode !== 0) {
-        service.itemFetchFailed(token, err || "Could not read item")
+        service.itemFetchFailed(token, "Item unavailable online or in the offline copy")
         return
       }
+      if (err.indexOf("BW_VAULT_OFFLINE") !== -1) service.offline = true
       var item = VaultModel.parseItem(raw)
       if (!item) {
         service.itemFetchFailed(token, "Could not read item")

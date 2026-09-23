@@ -74,6 +74,7 @@ Panel {
   readonly property bool unlocking: root.authPhase !== ""
   readonly property bool apiKeyStored: root.svc ? root.svc.apiKeyStored : false
   readonly property var items: root.svc ? root.svc.items : []
+  readonly property bool offline: root.svc ? root.svc.offline : false
   readonly property string serviceError: root.svc ? root.svc.error : ""
 
   // -- view state ------------------------------------------------------------
@@ -132,7 +133,7 @@ Panel {
     : root.status === "checking"
       ? "Checking…"
       : root.unlocked
-        ? (root.itemsLoaded ? root.items.length + (root.items.length === 1 ? " item" : " items") : "Unlocked")
+        ? (root.offline ? "Offline · " : "") + (root.itemsLoaded ? root.items.length + (root.items.length === 1 ? " item" : " items") : "Unlocked")
         : "Locked"
 
   // -- screens ---------------------------------------------------------------
@@ -260,6 +261,10 @@ Panel {
 
   function refreshDetailTotp() {
     if (!root.detail || root.detail.hasTotp !== true || !root.svc) return
+    if (root.offline) {
+      root.detailTotpError = "Unavailable offline"
+      return
+    }
     if (root.pendingTotpToken !== "") return
     root.detailTotp = ""
     root.detailTotpError = ""
@@ -751,8 +756,8 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: root.notice !== "" ? root.notice : "enter copy · ctrl+u user · ctrl+enter open"
-            color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : root.fainter
+            text: root.notice !== "" ? root.notice : (root.serviceError !== "" ? root.serviceError : "enter copy · ctrl+u user · ctrl+enter open")
+            color: root.notice !== "" ? (root.noticeIsError ? Color.urgent : Color.accent) : (root.serviceError !== "" ? Color.urgent : root.fainter)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap

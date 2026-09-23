@@ -16,7 +16,7 @@ Rewritten in Quickshell/QML from the [bw-tui](https://github.com/keboy/bw-tui) B
 
 The session, the item list and every `bw` child live in a **service** the shell mounts once and keeps. The dropdown is a view onto it. Opening the dropdown against a warm list costs nothing measurable — filtering 215 items lands well under a tenth of a second, because no `bw` runs at all. Passwords and current one-time codes are fetched only when needed and never enter the list cache.
 
-What that caching does and does not cover is spelled out in [Security notes](#security-notes). The short version: item *metadata* now outlives the panel; passwords and one-time codes do not.
+What that caching does and does not cover is spelled out in [Security notes](#security-notes). The long-lived QML service keeps only item metadata. An encrypted disk snapshot also holds passwords for offline use; one-time codes are never saved.
 
 ## Features
 
@@ -26,6 +26,8 @@ What that caching does and does not cover is spelled out in [Security notes](#se
 - **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`), which needs no interactive 2FA and skips new-device verification. Stored once per machine by `bw-vault-setup`; see [Setup](#setup).
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine and survives a shell restart.
 - **Idle cache expiry** — the cached list is forgotten after `cacheTtlMinutes` of no vault activity (15 by default). The session is untouched, so recovering costs one `bw list` and no master password.
+- **Offline copy** — a successful online list refresh writes an encrypted snapshot with passwords to local state. If the server is unreachable, the dropdown can search and copy from that snapshot while the desktop keyring is unlocked. One-time codes require the live CLI.
+- **Multiple endpoints** — each added server has its own CLI data directory, session, API key and encrypted snapshot. Manage them with `bw-vault-endpoints`.
 - **Clipboard protection** — credential copies use Wayland's sensitive-data hint and are wiped about 20 seconds later, but only if the clipboard still holds the value this plugin copied.
 - **Native Omarchy theming** — built on `Panel`, `KeyboardPanel`, `TextField` and `Color.*` tokens, so it matches your theme.
 
@@ -70,6 +72,20 @@ It prompts for `client_id` and `client_secret` (get them from the web vault: Acc
 **Why a terminal command and not a screen in the plugin.** You copy the two values out of a browser one at a time, and an Omarchy bar dropdown dismisses on any click outside it — the trip back to the browser for the second value would close the form and lose the first. Version 1.x solved this with a floating overlay card that deliberately did not grab the keyboard. Dropping the overlay meant dropping that trick, so the key entry moved somewhere that has never had the problem.
 
 If `bw` is already logged in by some other means, you can skip this entirely: the dropdown will ask for your master password and unlock against the existing login.
+
+### Multiple vault servers
+
+The existing CLI account remains the `default` endpoint. For another server:
+
+```sh
+~/.config/omarchy/plugins/com.aktivesolutions.bw-vault/bin/bw-vault-endpoints add NAS https://vault.example.com
+~/.config/omarchy/plugins/com.aktivesolutions.bw-vault/bin/bw-vault-setup
+omarchy restart shell
+```
+
+`bw-vault-endpoints list` shows IDs and marks the selected one with `*`. Use `select ID` to switch and `remove ID` to delete an added endpoint. Restart the shell after switching or removing an endpoint so the service drops its old in-memory session and item list. The `default` endpoint cannot be removed. Removal deletes that endpoint's managed CLI data, encrypted snapshot and keyring entries. Each endpoint needs its own API key setup; `bw-vault-setup --show` and `--clear` act on the selected endpoint.
+
+The offline copy is created after a successful online list. It is encrypted with a random key stored in Secret Service and saved under `$XDG_STATE_HOME/bw-vault` (or `~/.local/state/bw-vault`). It is available only while that keyring is unlocked. The snapshot contains passwords and notes; remove an endpoint to delete its snapshot. The default endpoint's snapshot can be deleted manually from that directory. TOTP codes are unavailable offline.
 
 ## Usage
 
@@ -153,6 +169,7 @@ Item metadata is now cached between opens where 1.x dropped it on every close �
 - [`bw`](https://bitwarden.com/help/bitwarden-cli/) — the Bitwarden CLI
 - [`jq`](https://jqlang.github.io/jq/) — reduces Bitwarden responses before they enter the shell process
 - `libsecret` (`secret-tool`) — OS keyring access
+- Python 3 with `cryptography` — encrypted offline snapshots and endpoint management
 - `wl-clipboard` (`wl-copy`, `wl-paste`) — clipboard
 
 These are usually already present on Omarchy. If one is missing, add it with your usual package tooling — the plugin never installs anything itself, and never invokes a package manager.
@@ -178,7 +195,8 @@ omarchy plugin remove com.aktivesolutions.bw-vault
 
 - The client_id and client_secret are stored in your OS keyring via `secret-tool`, never in a plaintext file, and are passed to `bw login --apikey` through the child process environment rather than argv. The master password is held only while an asynchronous keyring lookup or authentication child needs it, then cleared on every success and failure path.
 - Credentials handed to `bw login` / `bw unlock` have that environment cleared when the child exits, on both the success and failure paths. Before 2.0 the master password stayed set on the Process until the next unlock overwrote it.
-- **Item metadata is cached between opens, and that is a real change from 1.x.** A short-lived helper reduces `bw list` output to names, usernames, ids, types and URIs before it enters the long-lived QML process. Passwords, notes and other Bitwarden fields never enter the service's list buffer. The metadata lives until you lock or `cacheTtlMinutes` of idleness passes. If you would rather have the old behaviour at the cost of a four-second wait per open, set `cacheTtlMinutes` to 1; the session is unaffected either way.
+- **Item metadata is cached between opens.** A short-lived helper reduces `bw list` output to names, usernames, ids, types and URIs before it enters the long-lived QML process. Passwords and notes never enter the service's list buffer. The metadata lives until you lock or `cacheTtlMinutes` of idleness passes.
+- **Offline snapshots contain passwords and notes.** The helper selects item IDs, names, types, usernames, passwords, notes, URIs and a TOTP presence flag, then encrypts them with Fernet before writing a mode-0600 file. TOTP seeds and custom fields are omitted. The random encryption key lives in Secret Service, scoped to the endpoint. This protects the disk copy while the keyring is locked; it does not protect it from software running as you while your keyring is unlocked. Locking BW Vault clears the QML list, but the encrypted offline snapshot remains available for future offline use.
 - Item passwords are fetched on demand through the same field-limiting helper. Reads are serialized, so a delayed response cannot be attributed to a newer selection. The password is separated from item metadata before the service emits it, and temporary process buffers and `BW_SESSION` environments are cleared after each request. The widget retains a password only while its detail screen is showing it.
 - TOTP seeds never enter QML. The detail helper emits only a `hasTotp` boolean; a separate `bw get totp <id>` invocation asks the official Bitwarden CLI to calculate the current code. The displayed code is cleared when detail closes or the vault locks and refreshes every 30 seconds while visible.
 - The detail screen is the only place a secret is drawn. Passwords remain masked until you press `p`; one-time codes are shown directly because they are short-lived. A bar dropdown sits in the open — remember that before opening an item during screen sharing or a meeting.

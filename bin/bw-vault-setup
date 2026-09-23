@@ -41,6 +41,7 @@ USAGE
 }
 
 command -v secret-tool >/dev/null 2>&1 || fail "secret-tool not found — install libsecret"
+secret_cmd="$(dirname "$0")/bw-vault-secret"
 
 case "${1:-}" in
 -h | --help)
@@ -48,10 +49,10 @@ case "${1:-}" in
   exit 0
   ;;
 --show)
-  if secret-tool lookup service "$SERVICE" account "$ID_ACCOUNT" >/dev/null 2>&1; then
+  if "$secret_cmd" lookup service "$SERVICE" account "$ID_ACCOUNT" >/dev/null 2>&1; then
     # The id is not a secret, so it is safe to echo; the secret never is.
-    id=$(secret-tool lookup service "$SERVICE" account "$ID_ACCOUNT")
-    if secret-tool lookup service "$SERVICE" account "$SECRET_ACCOUNT" >/dev/null 2>&1; then
+    id=$("$secret_cmd" lookup service "$SERVICE" account "$ID_ACCOUNT")
+    if "$secret_cmd" lookup service "$SERVICE" account "$SECRET_ACCOUNT" >/dev/null 2>&1; then
       echo "client_id:     $id"
       echo "client_secret: stored"
     else
@@ -66,8 +67,8 @@ case "${1:-}" in
   exit 0
   ;;
 --clear)
-  secret-tool clear service "$SERVICE" account "$ID_ACCOUNT" 2>/dev/null || true
-  secret-tool clear service "$SERVICE" account "$SECRET_ACCOUNT" 2>/dev/null || true
+  "$secret_cmd" clear service "$SERVICE" account "$ID_ACCOUNT" 2>/dev/null || true
+  "$secret_cmd" clear service "$SERVICE" account "$SECRET_ACCOUNT" 2>/dev/null || true
   echo "Stored API key removed."
   exit 0
   ;;
@@ -99,11 +100,11 @@ echo
 
 # Piped into secret-tool's stdin rather than passed as an argument, so neither
 # value is ever visible in the process list.
-printf '%s' "$client_id" | secret-tool store --label="bw-vault client id" \
+printf '%s' "$client_id" | "$secret_cmd" store --label="bw-vault client id" \
   service "$SERVICE" account "$ID_ACCOUNT" ||
   fail "could not write the client id to the keyring"
 
-printf '%s' "$client_secret" | secret-tool store --label="bw-vault client secret" \
+printf '%s' "$client_secret" | "$secret_cmd" store --label="bw-vault client secret" \
   service "$SERVICE" account "$SECRET_ACCOUNT" ||
   fail "could not write the client secret to the keyring"
 

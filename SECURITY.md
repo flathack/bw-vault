@@ -12,6 +12,7 @@ branch.
 ## Security model
 
 - The official Bitwarden CLI remains the vault and cryptography boundary.
+- For offline access, a separate Fernet-encrypted snapshot contains selected item fields, including passwords and notes, but omits TOTP seeds and custom fields. Its key is held by Secret Service per endpoint. A same-user process with access to the unlocked keyring can decrypt it. Endpoint removal deletes its snapshot, keyring entries and managed CLI data.
 - A short-lived helper allowlists fields from `bw list` and `bw get` before QML
   receives their JSON. TOTP seeds remain inside Bitwarden; QML receives only a
   presence flag and codes calculated by `bw get totp` on demand.

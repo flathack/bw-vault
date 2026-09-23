@@ -4,6 +4,8 @@
 # QML UI needs. Full `bw` item JSON never enters the long-lived shell process.
 
 set -euo pipefail
+helper_dir=$(dirname "$0")
+export PATH="$helper_dir:$PATH"
 
 fail() {
   echo "bw-vault-query: $*" >&2
@@ -11,12 +13,25 @@ fail() {
 }
 
 command -v bw >/dev/null 2>&1 || fail "bw not found"
+command -v bw-vault-cli >/dev/null 2>&1 || fail "bw-vault-cli not found"
 command -v jq >/dev/null 2>&1 || fail "jq not found"
+
+error_file=$(mktemp)
+chmod 600 "$error_file"
+trap 'rm -f "$error_file"' EXIT
+
+network_failure() {
+  grep -Eiq 'ServerConfig|statusCode: 50[234]|\b(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH)\b|server unavailable|fetch failed' "$error_file"
+}
 
 case "${1:-}" in
 list)
   [[ $# -eq 1 ]] || fail "usage: bw-vault-query list"
-  bw list items | jq -c '
+  if raw=$(bw-vault-cli list items 2>"$error_file"); then
+    if ! printf '%s\n' "$raw" | bw-vault-storage snapshot "$(bw-vault-endpoint)"; then
+      echo BW_VAULT_CACHE_FAILED >&2
+    fi
+    printf '%s\n' "$raw" | jq -c '
     map({
       id: (.id // ""),
       name: (.name // ""),
@@ -24,11 +39,17 @@ list)
       username: (.login.username // ""),
       uris: ((.login.uris // []) | map({uri: (.uri // "")}))
     })
-  '
+    '
+  else
+    network_failure || fail "Could not list items"
+    echo BW_VAULT_OFFLINE >&2
+    bw-vault-storage read "$(bw-vault-endpoint)" list
+  fi
   ;;
 get)
   [[ $# -eq 2 && -n $2 ]] || fail "usage: bw-vault-query get <item-id>"
-  bw get item "$2" | jq -c '
+  if raw=$(bw-vault-cli get item "$2" 2>"$error_file"); then
+    printf '%s\n' "$raw" | jq -c '
     {
       id: (.id // ""),
       name: (.name // ""),
@@ -39,13 +60,18 @@ get)
       notes: (.notes // ""),
       uris: ((.login.uris // []) | map({uri: (.uri // "")}))
     }
-  '
+    '
+  else
+    network_failure || fail "Could not read item"
+    echo BW_VAULT_OFFLINE >&2
+    bw-vault-storage read "$(bw-vault-endpoint)" "$2"
+  fi
   ;;
 totp)
   [[ $# -eq 2 && -n $2 ]] || fail "usage: bw-vault-query totp <item-id>"
   # Ask Bitwarden to calculate the current code. The TOTP seed remains inside
   # the short-lived bw process and is never emitted to QML.
-  bw get totp "$2"
+  bw-vault-cli get totp "$2"
   ;;
 *)
   fail "usage: bw-vault-query <list | get ITEM_ID | totp ITEM_ID>"

@@ -16,6 +16,10 @@ mkdir -p "$state"
 delay=${BW_FIXTURE_DELAY:-0.4}
 
 case "${1:-}" in
+config)
+  [[ ${2:-} == server ]] || exit 1
+  exit 0
+  ;;
 status)
   sleep "$delay"
   if [[ -f $state/unlocked ]]; then s=unlocked
@@ -35,10 +39,14 @@ lock)
   # of the lock child and observe the old unlocked state.
   sleep "$delay"; sleep "$delay"; rm -f "$state/unlocked"; echo "Your vault is locked." ;;
 list)
+  [[ ${BW_FIXTURE_OFFLINE:-0} != 1 ]] || { echo 'server unavailable' >&2; exit 1; }
+  [[ ${BW_FIXTURE_LOCKED:-0} != 1 ]] || { echo 'Vault is locked.' >&2; exit 1; }
   sleep "$delay"
   [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }
   cat "$vault" ;;
 get)
+  [[ ${BW_FIXTURE_OFFLINE:-0} != 1 ]] || { echo 'server unavailable' >&2; exit 1; }
+  [[ ${BW_FIXTURE_LOCKED:-0} != 1 ]] || { echo 'Vault is locked.' >&2; exit 1; }
   sleep "$delay"
   [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }
   case "${2:-}" in

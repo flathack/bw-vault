@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+registry="${XDG_STATE_HOME:-$HOME/.local/state}/bw-vault/endpoints.json"
+if [[ -f $registry ]]; then jq -r '.selected // "default"' "$registry"; else printf 'default\n'; fi

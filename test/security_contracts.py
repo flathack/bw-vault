@@ -63,9 +63,9 @@ require(
     'buildCommand(["get", "item"' not in model,
     "raw item query must stay in short-lived helper",
 )
-require("bw list items | jq -c" in helper, "helper must minimize list output before QML")
-require("bw get item \"$2\" | jq -c" in helper, "helper must minimize detail output before QML")
-require('bw get totp "$2"' in helper, "TOTP must be calculated by the Bitwarden CLI")
+require("bw-vault-cli list items" in helper, "helper must minimize list output before QML")
+require("bw-vault-cli get item \"$2\"" in helper, "helper must minimize detail output before QML")
+require('bw-vault-cli get totp "$2"' in helper, "TOTP must be calculated by the Bitwarden CLI")
 require(
     "password: (.login.password" in helper and "hasTotp:" in helper,
     "detail helper must expose only a TOTP presence flag, never map the seed",

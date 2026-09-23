@@ -9,6 +9,7 @@ trap 'rm -rf "$state"' EXIT
 
 export PATH="$here/fixtures:$PATH"
 export BW_FIXTURE_STATE="$state"
+export XDG_STATE_HOME="$state/xdg-state"
 mkdir -p "$state/keyring"
 touch "$state/authed" "$state/unlocked"
 
@@ -47,10 +48,15 @@ totp_code=$("$root/bin/bw-vault-query" totp 11111111-0001-4000-8000-000000000001
 [[ $totp_code == "123456" ]] || { echo "unexpected TOTP fixture output" >&2; exit 1; }
 
 node "$here/model.test.mjs"
+python3 "$here/storage.test.py"
 python3 "$here/security_contracts.py"
 
 shellcheck -x \
   "$root/bin/bw-vault-query" \
+  "$root/bin/bw-vault-cli" \
+  "$root/bin/bw-vault-secret" \
+  "$root/bin/bw-vault-endpoint" \
+  "$root/bin/bw-vault-endpoints" \
   "$root/bin/bw-vault-setup" \
   "$here/demo" \
   "$here/fixtures/bw" \

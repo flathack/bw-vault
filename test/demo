@@ -55,5 +55,6 @@ echo
 # Not exec: the EXIT trap has to survive to clean the temp dirs up.
 PATH="$here/fixtures:$PATH" \
   BW_FIXTURE_STATE="$state" \
+  XDG_STATE_HOME="$state/xdg-state" \
   BW_VAULT_PLUGIN_DIR="$plugin" \
   qs -p "$work"

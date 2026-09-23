@@ -30,7 +30,7 @@ const PASSWORD_ENV = "BW_VAULT_MASTER_PASSWORD"
 // variable — see sessionEnvironment(). login / unlock / status establish or
 // classify the session rather than use it, so they run without one.
 function buildCommand(args) {
-  return ["bw"].concat(args || [])
+  return ["bw-vault-cli"].concat(args || [])
 }
 
 // Process `environment` map for commands that consume a held session. The
@@ -75,15 +75,15 @@ function passwordEnvironment(password) {
 // in memory for the process lifetime.
 
 function sessionStoreCommand() {
-  return ["secret-tool", "store", "--label=bw-vault session", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
+  return ["bw-vault-secret", "store", "--label=bw-vault session", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
 }
 
 function sessionLookupCommand() {
-  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
+  return ["bw-vault-secret", "lookup", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
 }
 
 function sessionClearCommand() {
-  return ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
+  return ["bw-vault-secret", "clear", "service", KEYRING_SERVICE, "account", KEYRING_ACCOUNT]
 }
 
 // -- Personal API key persistence --------------------------------------------
@@ -97,19 +97,19 @@ const API_KEY_ID_ACCOUNT = "bw-client-id"
 const API_KEY_SECRET_ACCOUNT = "bw-client-secret"
 
 function apiKeyIdLookupCommand() {
-  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", API_KEY_ID_ACCOUNT]
+  return ["bw-vault-secret", "lookup", "service", KEYRING_SERVICE, "account", API_KEY_ID_ACCOUNT]
 }
 
 function apiKeySecretLookupCommand() {
-  return ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", API_KEY_SECRET_ACCOUNT]
+  return ["bw-vault-secret", "lookup", "service", KEYRING_SERVICE, "account", API_KEY_SECRET_ACCOUNT]
 }
 
 function apiKeyIdStoreCommand() {
-  return ["secret-tool", "store", "--label=bw-vault client id", "service", KEYRING_SERVICE, "account", API_KEY_ID_ACCOUNT]
+  return ["bw-vault-secret", "store", "--label=bw-vault client id", "service", KEYRING_SERVICE, "account", API_KEY_ID_ACCOUNT]
 }
 
 function apiKeySecretStoreCommand() {
-  return ["secret-tool", "store", "--label=bw-vault client secret", "service", KEYRING_SERVICE, "account", API_KEY_SECRET_ACCOUNT]
+  return ["bw-vault-secret", "store", "--label=bw-vault client secret", "service", KEYRING_SERVICE, "account", API_KEY_SECRET_ACCOUNT]
 }
 
 // -- Commands ----------------------------------------------------------------
