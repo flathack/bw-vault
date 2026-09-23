@@ -83,7 +83,9 @@ The existing CLI account remains the `default` endpoint. For another server:
 omarchy restart shell
 ```
 
-`bw-vault-endpoints list` shows IDs and marks the selected one with `*`. Use `select ID` to switch and `remove ID` to delete an added endpoint. Restart the shell after switching or removing an endpoint so the service drops its old in-memory session and item list. The `default` endpoint cannot be removed. Removal deletes that endpoint's managed CLI data, encrypted snapshot and keyring entries. Each endpoint needs its own API key setup; `bw-vault-setup --show` and `--clear` act on the selected endpoint.
+In the unlock screen, click the small pencil beside the vault status to open **Connections**. There you can select, add, edit or remove a server. Removing an added server takes two clicks. Editing the original `default` connection moves BW Vault to its own CLI data directory; your global Bitwarden CLI configuration keeps its old address. Changing a server URL clears that connection's plugin session, API key and offline copy, so set up its API key again before unlocking.
+
+The terminal command remains available: `bw-vault-endpoints list` shows IDs and marks the selected one with `*`; `select ID`, `update ID NAME URL`, and `remove ID` manage entries. After terminal changes, restart the shell so the service drops the old in-memory vault. The `default` endpoint cannot be removed. Removal deletes an added endpoint's managed CLI data, encrypted snapshot and keyring entries. `bw-vault-setup --show` and `--clear` act on the selected endpoint.
 
 The offline copy is created after a successful online list. It is encrypted with a random key stored in Secret Service and saved under `$XDG_STATE_HOME/bw-vault` (or `~/.local/state/bw-vault`). It is available only while that keyring is unlocked. The snapshot contains passwords and notes; remove an endpoint to delete its snapshot. The default endpoint's snapshot can be deleted manually from that directory. TOTP codes are unavailable offline.
 

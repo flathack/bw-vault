@@ -32,6 +32,45 @@ def read_registry():
     return {"selected": "default", "endpoints": [{"id": "default", "name": "Default", "url": ""}]}
 
 
+def legacy_url():
+    path = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "Bitwarden CLI/data.json"
+    try:
+        data = json.loads(path.read_text())
+        return ((data.get("global_environment_environment") or {}).get("urls") or {}).get("base") or ""
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
+def public_registry(data):
+    result = json.loads(json.dumps(data))
+    for entry in result["endpoints"]:
+        if entry["id"] == "default" and not entry.get("managed") and not entry.get("url"):
+            entry["url"] = legacy_url()
+    return result
+
+
+def valid_url(url):
+    return bool(re.fullmatch(r"https?://[^\s/]+(?::\d+)?/?", url))
+
+
+def configure_directory(directory, url):
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    env = dict(os.environ, BITWARDENCLI_APPDATA_DIR=str(directory), BW_NOINTERACTION="true")
+    result = subprocess.run(["bw", "config", "server", url], env=env, capture_output=True)
+    if result.returncode:
+        fail("Could not configure the endpoint")
+
+
+def clear_endpoint_secrets(ident):
+    cache_path(ident).unlink(missing_ok=True)
+    suffix = "" if ident == "default" else "-" + ident
+    for account in ("offline-cache-" + ident, "bw-session" + suffix,
+                    "bw-client-id" + suffix, "bw-client-secret" + suffix):
+        subprocess.run(["secret-tool", "clear", "service", SERVICE,
+                        "account", account], capture_output=True)
+
+
 def write_registry(data):
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(BASE, 0o700)
@@ -99,23 +138,49 @@ def main():
     data = read_registry()
     action = args.pop(0)
     if action == "list" and not args:
-        print(json.dumps(data))
+        print(json.dumps(public_registry(data)))
     elif action == "add" and len(args) == 2:
         name, url = args
-        if not name.strip() or not re.fullmatch(r"https?://[^\s/]+(?::\d+)?/?", url):
+        if not name.strip() or not valid_url(url):
             fail("Name and an HTTP(S) server URL are required")
         ident = secrets.token_hex(8)
         directory = BASE / "cli" / ident
-        directory.mkdir(mode=0o700, parents=True)
-        os.chmod(directory, 0o700)
-        env = dict(os.environ, BITWARDENCLI_APPDATA_DIR=str(directory), BW_NOINTERACTION="true")
-        result = subprocess.run(["bw", "config", "server", url], env=env, capture_output=True)
-        if result.returncode:
-            fail("Could not configure the endpoint")
+        configure_directory(directory, url)
         data["endpoints"].append({"id": ident, "name": name.strip(), "url": url.rstrip("/")})
         data["selected"] = ident
         write_registry(data)
         print(ident)
+    elif action == "update" and len(args) == 3:
+        ident, name, url = args
+        current = endpoint(data, ident)
+        if not current or not name.strip() or not valid_url(url):
+            fail("Name and an HTTP(S) server URL are required")
+        old_url = current.get("url") or (legacy_url() if ident == "default" and not current.get("managed") else "")
+        if old_url.rstrip("/") != url.rstrip("/"):
+            cli_base = BASE / "cli"
+            cli_base.mkdir(mode=0o700, parents=True, exist_ok=True)
+            staged = Path(tempfile.mkdtemp(prefix="endpoint-", dir=cli_base))
+            try:
+                configure_directory(staged, url)
+                # Invalidate the old vault before the registry can ever point
+                # this ID at a different server.
+                clear_endpoint_secrets(ident)
+                target = cli_base / ident
+                previous = cli_base / (ident + ".previous")
+                if previous.exists():
+                    shutil.rmtree(previous)
+                if target.exists():
+                    target.rename(previous)
+                staged.rename(target)
+                if previous.exists():
+                    shutil.rmtree(previous)
+            finally:
+                if staged.exists():
+                    shutil.rmtree(staged)
+            current["managed"] = True
+        current["name"] = name.strip()
+        current["url"] = url.rstrip("/")
+        write_registry(data)
     elif action == "select" and len(args) == 1:
         if not endpoint(data, args[0]):
             fail("Unknown endpoint")
@@ -129,9 +194,7 @@ def main():
         if data["selected"] == ident:
             data["selected"] = "default"
         write_registry(data)
-        cache_path(ident).unlink(missing_ok=True)
-        for account in ("offline-cache", "bw-session", "bw-client-id", "bw-client-secret"):
-            subprocess.run(["secret-tool", "clear", "service", SERVICE, "account", account + "-" + ident], capture_output=True)
+        clear_endpoint_secrets(ident)
         shutil.rmtree(BASE / "cli" / ident)
     elif action == "snapshot" and len(args) == 1:
         ident = args[0]

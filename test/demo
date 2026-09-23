@@ -57,5 +57,6 @@ echo
 PATH="$here/fixtures:$PATH" \
   BW_FIXTURE_STATE="$state" \
   XDG_STATE_HOME="$state/xdg-state" \
+  XDG_CONFIG_HOME="$state/xdg-config" \
   BW_VAULT_PLUGIN_DIR="$plugin" \
   qs -p "$work"

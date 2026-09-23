@@ -14,7 +14,11 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
     fixture.mkdir()
     (fixture / "unlocked").touch()
     (fixture / "authed").touch()
-    env = dict(os.environ, XDG_STATE_HOME=str(base / "state"), BW_FIXTURE_STATE=str(fixture),
+    legacy = base / "config/Bitwarden CLI/data.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"global_environment_environment": {"urls": {"base": "https://old.example.test"}}}))
+    env = dict(os.environ, XDG_STATE_HOME=str(base / "state"), XDG_CONFIG_HOME=str(base / "config"),
+               BW_FIXTURE_STATE=str(fixture),
                PATH=str(root / "test/fixtures") + ":" + os.environ["PATH"])
 
     def run(*args, offline=False):
@@ -23,6 +27,15 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
         assert result.returncode == 0, result.stderr
         return result.stdout
 
+    initial = json.loads(run(str(root / "bin/bw-vault-storage"), "list"))
+    assert initial["endpoints"][0]["url"] == "https://old.example.test"
+    run("secret-tool", "store", "service", "com.aktivesolutions.bw-vault", "account", "bw-session")
+    run(str(root / "bin/bw-vault-endpoints"), "update", "default", "Main", "https://new.example.test")
+    cleared = subprocess.run(["secret-tool", "lookup", "service", "com.aktivesolutions.bw-vault",
+                              "account", "bw-session"], env=env, capture_output=True)
+    assert cleared.returncode != 0
+    assert json.loads(legacy.read_text())["global_environment_environment"]["urls"]["base"] == "https://old.example.test"
+    assert json.loads((base / "state/bw-vault/cli/default/data.json").read_text())["global_environment_environment"]["urls"]["base"] == "https://new.example.test"
     ident = run(str(root / "bin/bw-vault-endpoints"), "add", "NAS", "https://vault.example.test").strip()
     online = json.loads(run(str(root / "bin/bw-vault-query"), "list"))
     cache = base / "state/bw-vault" / ("cache-" + ident + ".enc")
@@ -44,6 +57,14 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
     run(str(root / "bin/bw-vault-endpoints"), "select", ident)
     item = online[0]["id"]
     assert json.loads(run(str(root / "bin/bw-vault-query"), "get", item, offline=True))["id"] == item
+    run("secret-tool", "store", "service", "com.aktivesolutions.bw-vault",
+        "account", "bw-session-" + ident)
+    run(str(root / "bin/bw-vault-endpoints"), "update", ident, "NAS new", "https://other.example.test")
+    assert not cache.exists()
+    cleared = subprocess.run(["secret-tool", "lookup", "service", "com.aktivesolutions.bw-vault",
+                              "account", "bw-session-" + ident], env=env, capture_output=True)
+    assert cleared.returncode != 0
+    assert json.loads((base / "state/bw-vault/cli" / ident / "data.json").read_text())["global_environment_environment"]["urls"]["base"] == "https://other.example.test"
     run(str(root / "bin/bw-vault-endpoints"), "remove", ident)
     assert not cache.exists()
     assert not (base / "state/bw-vault/cli" / ident).exists()

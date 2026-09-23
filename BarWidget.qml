@@ -79,8 +79,86 @@ Panel {
 
   // -- view state ------------------------------------------------------------
 
-  // "unlock" | "list" | "detail"
+  // "unlock" | "connections" | "list" | "detail"
   property string screen: "list"
+
+  readonly property string endpointToolPath: decodeURIComponent(
+    String(Qt.resolvedUrl("bin/bw-vault-storage")).replace(/^file:\/\//, ""))
+  property var endpoints: []
+  property string selectedEndpointId: "default"
+  property string editingEndpointId: ""
+  property bool connectionEditor: false
+  property string connectionError: ""
+  property string pendingRemoveId: ""
+  readonly property var selectedConnection: {
+    for (var i = 0; i < root.endpoints.length; i++)
+      if (root.endpoints[i].id === root.selectedEndpointId) return root.endpoints[i]
+    return null
+  }
+
+  function endpointAction(action, args) {
+    if (endpointProc.running) return
+    root.connectionError = ""
+    endpointProc.operation = action
+    endpointProc.command = [root.endpointToolPath, action].concat(args || [])
+    endpointProc.running = true
+  }
+
+  function loadEndpoints() { root.endpointAction("list", []) }
+
+  function openConnections() {
+    root.connectionEditor = false
+    root.pendingRemoveId = ""
+    root.screen = "connections"
+    root.loadEndpoints()
+  }
+
+  function editConnection(item) {
+    root.editingEndpointId = item ? item.id : ""
+    connectionNameField.text = item ? item.name : ""
+    connectionUrlField.text = item ? item.url : ""
+    root.connectionEditor = true
+    Qt.callLater(function() { connectionNameField.forceActiveFocus() })
+  }
+
+  function saveConnection() {
+    var name = connectionNameField.text.trim()
+    var url = connectionUrlField.text.trim()
+    if (!name || !/^https?:\/\/[^\s/]+(?::\d+)?\/?$/.test(url)) {
+      root.connectionError = "Enter a name and an HTTP(S) server URL"
+      return
+    }
+    root.endpointAction(root.editingEndpointId ? "update" : "add",
+      root.editingEndpointId ? [root.editingEndpointId, name, url] : [name, url])
+  }
+
+  Process {
+    id: endpointProc
+    property string operation: ""
+    stdout: StdioCollector { id: endpointOut; waitForEnd: true }
+    stderr: StdioCollector { id: endpointErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var op = endpointProc.operation
+      endpointProc.operation = ""
+      if (exitCode !== 0) {
+        root.connectionError = String(endpointErr.text || "Connection change failed").trim().split("\n")[0]
+        return
+      }
+      if (op === "list") {
+        try {
+          var data = JSON.parse(endpointOut.text)
+          root.endpoints = data.endpoints || []
+          root.selectedEndpointId = data.selected || "default"
+        } catch (e) { root.connectionError = "Could not read connections" }
+        return
+      }
+      root.connectionEditor = false
+      root.pendingRemoveId = ""
+      if (root.svc) root.svc.endpointChanged()
+      root.screen = "unlock"
+      Qt.callLater(function() { root.loadEndpoints() })
+    }
+  }
 
   property string query: ""
   property var results: []
@@ -151,6 +229,8 @@ Panel {
     if (root.screen === "detail") keyCatcher.forceActiveFocus()
     else if (root.screen === "list" && root.unlocked) searchField.forceActiveFocus()
     else if (root.screen === "unlock" && root.status !== "checking") passField.forceActiveFocus()
+    else if (root.screen === "connections")
+      (root.connectionEditor ? connectionNameField : keyCatcher).forceActiveFocus()
   }
 
   function leaveDetail() {
@@ -384,7 +464,8 @@ Panel {
       root.showPass = false
       root.screen = "unlock"
       if (root.opened) {
-        root.say(reason === "expired" ? "Session expired" : "Locked", false)
+        root.say(reason === "expired" ? "Session expired"
+          : (reason === "switched" ? "Connection changed" : "Locked"), false)
         Qt.callLater(function() { if (root.opened) passField.forceActiveFocus() })
       }
     }
@@ -392,6 +473,7 @@ Panel {
 
   onOpenedChanged: {
     if (opened) {
+      root.loadEndpoints()
       root.selectedIndex = 0
       root.notice = ""
       root.syncScreen()
@@ -439,6 +521,10 @@ Panel {
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
+    function connections(): void {
+      if (!root.opened) root.open()
+      root.openConnections()
+    }
 
     // Open the dropdown with the search line already filled in, for a keybind
     // or a script that knows what you are looking for.
@@ -514,7 +600,9 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: root.screen === "detail" ? keyCatcher : (root.unlocked ? searchField : passField)
+    focusTarget: root.screen === "detail" ? keyCatcher
+      : (root.screen === "connections" ? (root.connectionEditor ? connectionNameField : keyCatcher)
+        : (root.unlocked ? searchField : passField))
     contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
@@ -526,9 +614,11 @@ Panel {
       // there.
       // A field may retain activeFocus for one event-loop turn after becoming
       // hidden. Detail navigation must win during that transition as well.
-      blocked: root.screen !== "detail" && (searchField.activeFocus || passField.activeFocus)
+      blocked: root.screen !== "detail" && (searchField.activeFocus || passField.activeFocus
+        || connectionNameField.activeFocus || connectionUrlField.activeFocus)
 
-      onCloseRequested: root.screen === "detail" ? root.leaveDetail() : root.close()
+      onCloseRequested: root.screen === "detail" ? root.leaveDetail()
+        : (root.screen === "connections" ? (root.connectionEditor ? root.connectionEditor = false : root.screen = "unlock") : root.close())
       onMoveRequested: function(dx, dy) {
         if (root.screen === "detail" && dx < 0) root.leaveDetail()
       }
@@ -558,7 +648,8 @@ Panel {
         // ---------- Hero: what the vault is doing ------------------------
         Item {
           width: parent.width
-          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight, lockButton.size)
+          implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight,
+            lockButton.visible ? lockButton.size : 0, editConnectionsButton.visible ? editConnectionsButton.size : 0)
 
           Text {
             textFormat: Text.PlainText
@@ -588,19 +679,35 @@ Panel {
             onClicked: if (root.svc) root.svc.lock()
           }
 
+          PanelActionButton {
+            id: editConnectionsButton
+            visible: root.screen === "unlock"
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰏫"
+            tooltipText: "Edit vault connections"
+            foreground: root.foreground
+            fontFamily: Style.font.family
+            size: Style.space(22)
+            onClicked: root.openConnections()
+          }
+
           Column {
             id: heroLabels
             anchors.left: heroIcon.right
             anchors.leftMargin: Style.space(14)
             anchors.right: parent.right
-            anchors.rightMargin: (lockButton.visible ? lockButton.size + Style.space(12) : 0)
+            anchors.rightMargin: ((lockButton.visible ? lockButton.size : 0)
+              + (editConnectionsButton.visible ? editConnectionsButton.size : 0))
+              + ((lockButton.visible || editConnectionsButton.visible) ? Style.space(12) : 0)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
 
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: root.screen === "detail" && root.detail ? root.detail.name : "BW Vault"
+              text: root.screen === "detail" && root.detail ? root.detail.name
+                : (root.screen === "connections" ? "Connections" : "BW Vault")
               color: root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.title
@@ -611,7 +718,8 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: (root.screen === "detail"
+              text: (root.screen === "connections" ? "VAULT SERVERS"
+                : root.screen === "detail"
                 ? (root.detail ? String(root.detail.type).toUpperCase() : "OPENING…")
                 : root.statusText.toUpperCase())
               color: root.dim
@@ -633,6 +741,18 @@ Panel {
           visible: root.screen === "unlock"
           width: parent.width
           spacing: Style.space(10)
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            text: root.selectedConnection
+              ? root.selectedConnection.name + (root.selectedConnection.url ? " · " + root.selectedConnection.url : "")
+              : "Default connection"
+            color: root.dim
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideMiddle
+          }
 
           // Nothing in the keyring: there is no useful form to show, because
           // the API key cannot be pasted in here without losing it to the
@@ -691,6 +811,159 @@ Panel {
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
+        }
+
+        // ---------- Connections -------------------------------------------
+        Column {
+          visible: root.screen === "connections"
+          width: parent.width
+          spacing: Style.space(8)
+
+          Column {
+            visible: !root.connectionEditor
+            width: parent.width
+            spacing: Style.space(4)
+
+            Repeater {
+              model: root.endpoints
+              delegate: Item {
+                required property var modelData
+                width: parent.width
+                implicitHeight: Style.space(46)
+
+                Column {
+                  anchors.left: parent.left
+                  anchors.right: endpointActions.left
+                  anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(2)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    width: parent.width
+                    text: (modelData.id === root.selectedEndpointId ? "● " : "") + modelData.name
+                    color: modelData.id === root.selectedEndpointId ? Color.accent : root.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                    elide: Text.ElideRight
+                  }
+                  Text {
+                    textFormat: Text.PlainText
+                    width: parent.width
+                    text: modelData.url || "Bitwarden default"
+                    color: root.fainter
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.caption
+                    elide: Text.ElideMiddle
+                  }
+                }
+
+                Row {
+                  id: endpointActions
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(2)
+
+                  PanelActionButton {
+                    iconText: "󰁔"
+                    tooltipText: "Use this connection"
+                    enabled: !endpointProc.running && modelData.id !== root.selectedEndpointId
+                    size: Style.space(22)
+                    onClicked: root.endpointAction("select", [modelData.id])
+                  }
+                  PanelActionButton {
+                    iconText: "󰏫"
+                    tooltipText: "Edit connection"
+                    enabled: !endpointProc.running
+                    size: Style.space(22)
+                    onClicked: root.editConnection(modelData)
+                  }
+                  PanelActionButton {
+                    iconText: root.pendingRemoveId === modelData.id ? "󰄬" : "󰆴"
+                    tooltipText: root.pendingRemoveId === modelData.id ? "Click again to remove" : "Remove connection"
+                    enabled: !endpointProc.running && modelData.id !== "default"
+                    size: Style.space(22)
+                    onClicked: {
+                      if (root.pendingRemoveId === modelData.id) root.endpointAction("remove", [modelData.id])
+                      else root.pendingRemoveId = modelData.id
+                    }
+                  }
+                }
+              }
+            }
+
+            PanelActionButton {
+              iconText: "󰐕"
+              tooltipText: "Add connection"
+              enabled: !endpointProc.running
+              size: Style.space(24)
+              focusable: true
+              onClicked: root.editConnection(null)
+            }
+          }
+
+          Column {
+            visible: root.connectionEditor
+            width: parent.width
+            spacing: Style.space(8)
+
+            TextField {
+              id: connectionNameField
+              width: parent.width
+              foreground: root.foreground
+              placeholderText: "Connection name"
+              enabled: !endpointProc.running
+              Keys.onEscapePressed: root.connectionEditor = false
+            }
+            TextField {
+              id: connectionUrlField
+              width: parent.width
+              foreground: root.foreground
+              placeholderText: "https://vault.example.com"
+              enabled: !endpointProc.running
+              onAccepted: root.saveConnection()
+              Keys.onEscapePressed: root.connectionEditor = false
+            }
+            Row {
+              spacing: Style.space(8)
+              PanelActionButton {
+                iconText: "󰄬"
+                tooltipText: "Save connection"
+                enabled: !endpointProc.running
+                focusable: true
+                bordered: true
+                size: Style.space(24)
+                onClicked: root.saveConnection()
+              }
+              PanelActionButton {
+                iconText: "󰅖"
+                tooltipText: "Cancel"
+                enabled: !endpointProc.running
+                focusable: true
+                size: Style.space(24)
+                onClicked: root.connectionEditor = false
+              }
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: root.connectionError !== ""
+            width: parent.width
+            text: root.connectionError
+            color: Color.urgent
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          PanelActionButton {
+            iconText: "󰁍"
+            tooltipText: "Back to unlock"
+            size: Style.space(24)
+            focusable: true
+            onClicked: root.screen = "unlock"
           }
         }
 

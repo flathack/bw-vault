@@ -117,6 +117,7 @@ Item {
     // first query one event-loop turn so helperPath is available before any
     // Bitwarden command can run.
     Qt.callLater(function() {
+      apiKeyIdProbe.generation = service.generation
       apiKeyIdProbe.running = true
       service.refresh()
     })
@@ -152,6 +153,36 @@ Item {
     service.items = []
     service.itemsLoaded = false
     cacheTimer.stop()
+  }
+
+  // A connection change swaps the CLI data directory and keyring namespace.
+  // Drop every reference to the previous vault before looking up the new one.
+  function endpointChanged() {
+    service.generation++
+    for (var proc of [sessionLookup, statusProc, loginProc, unlockProc,
+                      listProc, getProc, totpProc, apiKeyIdLookup,
+                      apiKeySecretLookup, apiKeyIdProbe, sessionStore]) {
+      if (proc.running) proc.running = false
+    }
+    service.clearAuthEnvironment()
+    service.clearSessionEnvironments()
+    copyProc.queuedPayload = ""
+    service.requestClipboardClear()
+    service.heldSession = ""
+    service.items = []
+    service.itemsLoaded = false
+    service.offline = false
+    service.error = ""
+    service.busy = false
+    service.authPhase = ""
+    service.apiKeyStored = false
+    cacheTimer.stop()
+    service.lockedOut("switched")
+    Qt.callLater(function() {
+      apiKeyIdProbe.generation = service.generation
+      apiKeyIdProbe.running = true
+      service.refresh(true)
+    })
   }
 
   function onSessionLookup(rawSession) {
@@ -563,12 +594,16 @@ Item {
   // only ever read in the moment it is handed to `bw login`.
   Process {
     id: apiKeyIdProbe
+    property int generation: 0
     command: service.localCommand(VaultModel.apiKeyIdLookupCommand())
     stdout: StdioCollector {
       id: apiKeyIdProbeOut
       waitForEnd: true
     }
-    onExited: service.apiKeyStored = String(apiKeyIdProbeOut.text || "").trim() !== ""
+    onExited: {
+      if (apiKeyIdProbe.generation === service.generation)
+        service.apiKeyStored = String(apiKeyIdProbeOut.text || "").trim() !== ""
+    }
   }
 
   Process {

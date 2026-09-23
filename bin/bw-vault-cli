@@ -3,7 +3,8 @@ set -euo pipefail
 registry="${XDG_STATE_HOME:-$HOME/.local/state}/bw-vault/endpoints.json"
 if [[ -f $registry ]]; then
   selected=$(jq -r '.selected // "default"' "$registry")
-  if [[ $selected != default && $selected =~ ^[0-9a-f]{16}$ ]]; then
+  managed=$(jq -r --arg id "$selected" '.endpoints[] | select(.id == $id) | .managed // false' "$registry")
+  if [[ $selected =~ ^(default|[0-9a-f]{16})$ && ( $selected != default || $managed == true ) ]]; then
     export BITWARDENCLI_APPDATA_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/bw-vault/cli/$selected"
   fi
 fi

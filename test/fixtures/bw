@@ -18,6 +18,10 @@ delay=${BW_FIXTURE_DELAY:-0.4}
 case "${1:-}" in
 config)
   [[ ${2:-} == server ]] || exit 1
+  if [[ -n ${BITWARDENCLI_APPDATA_DIR:-} && -n ${3:-} ]]; then
+    mkdir -p "$BITWARDENCLI_APPDATA_DIR"
+    jq -n --arg url "$3" '{global_environment_environment: {urls: {base: $url}}}' > "$BITWARDENCLI_APPDATA_DIR/data.json"
+  fi
   exit 0
   ;;
 status)

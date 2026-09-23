@@ -4,6 +4,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 case "${1:-}" in
 list) [[ $# -eq 1 ]] || exit 2; "$here/bw-vault-storage" list | jq -r '.selected as $selected | .endpoints[] | (if .id == $selected then "* " else "  " end) + .id + "  " + .name + "  " + .url' ;;
 add) [[ $# -eq 3 ]] || { echo 'Usage: bw-vault-endpoints add NAME URL' >&2; exit 2; }; "$here/bw-vault-storage" add "$2" "$3" ;;
+update) [[ $# -eq 4 ]] || exit 2; "$here/bw-vault-storage" update "$2" "$3" "$4" ;;
 select|remove) [[ $# -eq 2 ]] || exit 2; "$here/bw-vault-storage" "$1" "$2" ;;
-*) echo 'Usage: bw-vault-endpoints {list|add NAME URL|select ID|remove ID}' >&2; exit 2 ;;
+*) echo 'Usage: bw-vault-endpoints {list|add NAME URL|update ID NAME URL|select ID|remove ID}' >&2; exit 2 ;;
 esac
