@@ -37,8 +37,11 @@ Item {
   property string omarchyPath: ""
 
   readonly property string pluginId: (manifest && manifest.id) || "com.aktivesolutions.bw-vault"
-  readonly property string pluginPath: (manifest && manifest.__sourceDir) ? String(manifest.__sourceDir) : ""
-  readonly property string helperPath: service.pluginPath ? service.pluginPath + "/bin/bw-vault-query" : ""
+  // The host strips __sourceDir from the manifest passed to services. Resolve
+  // from this QML file instead, so startup cannot stay on "Checking…" forever.
+  readonly property string helperPath: decodeURIComponent(
+    String(Qt.resolvedUrl("bin/bw-vault-query")).replace(/^file:\/\//, ""))
+  readonly property string pluginPath: service.helperPath.slice(0, -"/bin/bw-vault-query".length)
 
   // Pushed in by the bar widget: the shell injects settings into widgets but
   // never into services, so the widget is the only place that sees them.

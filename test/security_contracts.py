@@ -20,6 +20,8 @@ require(
     'command: ["wl-copy", "--sensitive"]' in service,
     "credential copies must carry wl-copy --sensitive",
 )
+require('Qt.resolvedUrl("bin/bw-vault-query")' in service,
+        "helper path must resolve from Service.qml, not a stripped manifest field")
 
 text_blocks = len(re.findall(r"^\s*Text \{", widget, re.MULTILINE))
 plain_text_guards = widget.count("textFormat: Text.PlainText")
