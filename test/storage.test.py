@@ -21,9 +21,9 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
                BW_FIXTURE_STATE=str(fixture),
                PATH=str(root / "test/fixtures") + ":" + os.environ["PATH"])
 
-    def run(*args, offline=False):
+    def run(*args, offline=False, input_data=None):
         result = subprocess.run(args, env=dict(env, BW_FIXTURE_OFFLINE="1" if offline else "0"),
-                                capture_output=True, text=True)
+                                input=input_data, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         return result.stdout
 
@@ -36,7 +36,17 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
     assert cleared.returncode != 0
     assert json.loads(legacy.read_text())["global_environment_environment"]["urls"]["base"] == "https://old.example.test"
     assert json.loads((base / "state/bw-vault/cli/default/data.json").read_text())["global_environment_environment"]["urls"]["base"] == "https://new.example.test"
+    run(str(root / "bin/bw-vault-storage"), "store-key",
+        input_data=json.dumps({"clientId": "default-id", "clientSecret": "default-secret"}))
+    assert run("secret-tool", "lookup", "service", "com.aktivesolutions.bw-vault",
+               "account", "bw-client-secret") == "default-secret"
     ident = run(str(root / "bin/bw-vault-endpoints"), "add", "NAS", "https://vault.example.test").strip()
+    run(str(root / "bin/bw-vault-storage"), "store-key",
+        input_data=json.dumps({"clientId": "nas-id", "clientSecret": "nas-secret"}))
+    assert run("secret-tool", "lookup", "service", "com.aktivesolutions.bw-vault",
+               "account", "bw-client-secret-" + ident) == "nas-secret"
+    assert run("secret-tool", "lookup", "service", "com.aktivesolutions.bw-vault",
+               "account", "bw-client-secret") == "default-secret"
     online = json.loads(run(str(root / "bin/bw-vault-query"), "list"))
     cache = base / "state/bw-vault" / ("cache-" + ident + ".enc")
     assert cache.exists()
@@ -68,5 +78,8 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
     run(str(root / "bin/bw-vault-endpoints"), "remove", ident)
     assert not cache.exists()
     assert not (base / "state/bw-vault/cli" / ident).exists()
+    removed_key = subprocess.run(["secret-tool", "lookup", "service", "com.aktivesolutions.bw-vault",
+                                  "account", "bw-client-secret-" + ident], env=env, capture_output=True)
+    assert removed_key.returncode != 0
 
 print("Endpoint and offline cache tests passed")

@@ -71,6 +71,24 @@ def clear_endpoint_secrets(ident):
                         "account", account], capture_output=True)
 
 
+def store_api_key(ident, payload):
+    client_id = payload.get("clientId")
+    client_secret = payload.get("clientSecret")
+    if not isinstance(client_id, str) or not client_id.strip() or not isinstance(client_secret, str) or not client_secret:
+        fail("Client ID and client secret are required")
+    suffix = "" if ident == "default" else "-" + ident
+    for account, label, value in (("bw-client-secret" + suffix, "BW Vault client secret", client_secret),
+                                  ("bw-client-id" + suffix, "BW Vault client ID", client_id.strip())):
+        stored = subprocess.run(["secret-tool", "store", "--label=" + label,
+                                 "service", SERVICE, "account", account],
+                                input=value.encode(), capture_output=True)
+        if stored.returncode:
+            for entry in ("bw-client-id" + suffix, "bw-client-secret" + suffix):
+                subprocess.run(["secret-tool", "clear", "service", SERVICE,
+                                "account", entry], capture_output=True)
+            fail("Could not save the API key in the system keyring")
+
+
 def write_registry(data):
     BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(BASE, 0o700)
@@ -196,6 +214,11 @@ def main():
         write_registry(data)
         clear_endpoint_secrets(ident)
         shutil.rmtree(BASE / "cli" / ident)
+    elif action == "store-key" and not args:
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, dict) or not endpoint(data, data["selected"]):
+            fail("Invalid API key")
+        store_api_key(data["selected"], payload)
     elif action == "snapshot" and len(args) == 1:
         ident = args[0]
         items = json.load(sys.stdin)

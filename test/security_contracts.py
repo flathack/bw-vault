@@ -20,6 +20,12 @@ require(
     'command: ["wl-copy", "--sensitive"]' in service,
     "credential copies must carry wl-copy --sensitive",
 )
+require('apiKeySaveProc.payload = JSON.stringify' in service and
+        'apiKeySaveProc.stdinEnabled = true' in service and
+        'payload = ""' in service,
+        "API key setup must pass credentials on stdin and clear its payload")
+require('clientSecretField.text = ""' in widget,
+        "API key form must clear the client secret")
 require('Qt.resolvedUrl("bin/bw-vault-query")' in service,
         "helper path must resolve from Service.qml, not a stripped manifest field")
 

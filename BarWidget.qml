@@ -12,13 +12,9 @@ import "VaultModel.js" as VaultModel
 // does the same job with less ceremony — you want one password, and you are
 // already looking at the field you will paste it into.
 //
-// One thing did not survive that move: entering a personal API key for the
-// first time. You copy client_id and client_secret out of a browser one at a
-// time, and KeyboardPanel dismisses on any click outside it, so the trip back
-// for the second value would close the form and lose the first. The overlay
-// solved that with a floating, non-grabbing card; the dropdown solves it by not
-// doing it at all — `bw-vault-setup` stores the key from a terminal, once per
-// machine. From then on this panel only ever asks for the master password.
+// The dropdown closes when focus moves to a browser. API-key setup therefore
+// retains only the non-secret client ID across closes, so the user can copy
+// the client secret in a second trip and save both values to Secret Service.
 //
 // Session, item metadata and every `bw` child live in Service.qml, which the
 // shell mounts once. This file holds screens, selection and focus.
@@ -73,6 +69,7 @@ Panel {
   readonly property string authPhase: root.svc ? root.svc.authPhase : ""
   readonly property bool unlocking: root.authPhase !== ""
   readonly property bool apiKeyStored: root.svc ? root.svc.apiKeyStored : false
+  readonly property bool apiKeySaving: root.svc ? root.svc.apiKeySaving : false
   readonly property var items: root.svc ? root.svc.items : []
   readonly property bool offline: root.svc ? root.svc.offline : false
   readonly property string serviceError: root.svc ? root.svc.error : ""
@@ -107,6 +104,7 @@ Panel {
   function loadEndpoints() { root.endpointAction("list", []) }
 
   function openConnections() {
+    if (root.apiKeySaving) return
     root.connectionEditor = false
     root.pendingRemoveId = ""
     root.screen = "connections"
@@ -228,7 +226,11 @@ Panel {
     if (!root.opened) return
     if (root.screen === "detail") keyCatcher.forceActiveFocus()
     else if (root.screen === "list" && root.unlocked) searchField.forceActiveFocus()
-    else if (root.screen === "unlock" && root.status !== "checking") passField.forceActiveFocus()
+    else if (root.screen === "unlock" && root.status !== "checking") {
+      if (!root.apiKeyStored && root.status === "unauthenticated")
+        (clientIdField.text ? clientSecretField : clientIdField).forceActiveFocus()
+      else passField.forceActiveFocus()
+    }
     else if (root.screen === "connections")
       (root.connectionEditor ? connectionNameField : keyCatcher).forceActiveFocus()
   }
@@ -278,7 +280,7 @@ Panel {
   function submitUnlock() {
     if (root.unlocking) return
     if (!root.apiKeyStored && root.status === "unauthenticated") {
-      root.say("Run bw-vault-setup in a terminal first", true)
+      root.say("Save your API key first", true)
       return
     }
     if (!String(root.masterPassword)) {
@@ -287,6 +289,19 @@ Panel {
     }
     root.notice = ""
     if (root.svc) root.svc.unlockWithStored(root.masterPassword)
+  }
+
+  function submitApiKey() {
+    var clientId = clientIdField.text.trim()
+    var clientSecret = clientSecretField.text
+    if (!clientId || !clientSecret) {
+      root.say("Client ID and client secret are required", true)
+      return
+    }
+    if (root.svc && root.svc.storeApiKey(clientId, clientSecret)) {
+      clientSecretField.text = ""
+      root.notice = ""
+    }
   }
 
   // -- copying ---------------------------------------------------------------
@@ -450,6 +465,18 @@ Panel {
       if (root.opened) Qt.callLater(function() { passField.forceActiveFocus() })
     }
 
+    function onApiKeySaved() {
+      clientIdField.text = ""
+      clientSecretField.text = ""
+      root.say("API key saved. Enter your master password.", false)
+      if (root.opened) Qt.callLater(function() { passField.forceActiveFocus() })
+    }
+
+    function onApiKeySaveFailed(message) {
+      root.say(message, true)
+      if (root.opened) Qt.callLater(function() { clientSecretField.forceActiveFocus() })
+    }
+
     function onLockedOut(reason) {
       root.query = ""
       root.results = []
@@ -463,10 +490,14 @@ Panel {
       root.pendingTotpToken = ""
       root.showPass = false
       root.screen = "unlock"
+      if (reason === "switched") {
+        clientIdField.text = ""
+        clientSecretField.text = ""
+      }
       if (root.opened) {
         root.say(reason === "expired" ? "Session expired"
           : (reason === "switched" ? "Connection changed" : "Locked"), false)
-        Qt.callLater(function() { if (root.opened) passField.forceActiveFocus() })
+        Qt.callLater(function() { if (root.opened) root.focusCurrentScreen() })
       }
     }
   }
@@ -484,7 +515,7 @@ Panel {
       Qt.callLater(function() {
         if (!root.opened) return
         if (root.unlocked) searchField.forceActiveFocus()
-        else if (root.status !== "checking") passField.forceActiveFocus()
+        else if (root.status !== "checking") root.focusCurrentScreen()
       })
     } else {
       // The fields are the source of query / masterPassword (one-way, via
@@ -492,6 +523,7 @@ Panel {
       // search — and the master password — sitting in the boxes.
       searchField.text = ""
       passField.text = ""
+      clientSecretField.text = ""
       root.masterPassword = ""
       root.query = ""
       root.results = []
@@ -510,6 +542,8 @@ Panel {
   onQueryChanged: root.rebuild()
   onItemsChanged: if (root.opened) root.rebuild()
   onUnlockedChanged: if (root.opened) root.syncScreen()
+  onStatusChanged: if (root.opened && root.screen === "unlock")
+    Qt.callLater(function() { root.focusCurrentScreen() })
   onScreenChanged: Qt.callLater(function() { root.focusCurrentScreen() })
 
   // Everything here filters metadata that is already in this process. Nothing
@@ -602,7 +636,9 @@ Panel {
     open: root.opened
     focusTarget: root.screen === "detail" ? keyCatcher
       : (root.screen === "connections" ? (root.connectionEditor ? connectionNameField : keyCatcher)
-        : (root.unlocked ? searchField : passField))
+        : (root.unlocked ? searchField
+          : (!root.apiKeyStored && root.status === "unauthenticated"
+            ? (clientIdField.text ? clientSecretField : clientIdField) : passField)))
     contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
@@ -615,7 +651,8 @@ Panel {
       // A field may retain activeFocus for one event-loop turn after becoming
       // hidden. Detail navigation must win during that transition as well.
       blocked: root.screen !== "detail" && (searchField.activeFocus || passField.activeFocus
-        || connectionNameField.activeFocus || connectionUrlField.activeFocus)
+        || connectionNameField.activeFocus || connectionUrlField.activeFocus
+        || clientIdField.activeFocus || clientSecretField.activeFocus)
 
       onCloseRequested: root.screen === "detail" ? root.leaveDetail()
         : (root.screen === "connections" ? (root.connectionEditor ? root.connectionEditor = false : root.screen = "unlock") : root.close())
@@ -682,6 +719,7 @@ Panel {
           PanelActionButton {
             id: editConnectionsButton
             visible: root.screen === "unlock"
+            enabled: !root.apiKeySaving
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             iconText: "󰏫"
@@ -754,9 +792,6 @@ Panel {
             elide: Text.ElideMiddle
           }
 
-          // Nothing in the keyring: there is no useful form to show, because
-          // the API key cannot be pasted in here without losing it to the
-          // first click outside the panel.
           Column {
             visible: !root.apiKeyStored && root.status === "unauthenticated"
             width: parent.width
@@ -765,21 +800,65 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              text: "This machine has no Bitwarden API key stored yet. Run this in a terminal, once:"
+              text: "Paste your personal API key from the web vault: Account Settings → Security → Keys. Your client ID stays here while you copy the secret."
               color: root.dim
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.WordWrap
             }
 
+            TextField {
+              id: clientIdField
+              width: parent.width
+              foreground: root.foreground
+              placeholderText: "client_id"
+              enabled: !root.apiKeySaving
+              onAccepted: clientSecretField.forceActiveFocus()
+              Keys.onEscapePressed: root.close()
+            }
+
+            TextField {
+              id: clientSecretField
+              width: parent.width
+              foreground: root.foreground
+              placeholderText: "client_secret"
+              password: true
+              enabled: !root.apiKeySaving
+              onAccepted: root.submitApiKey()
+              Keys.onEscapePressed: root.close()
+            }
+
+            Row {
+              spacing: Style.space(8)
+              PanelActionButton {
+                iconText: "󰄬"
+                tooltipText: "Save API key to system keyring"
+                enabled: !root.apiKeySaving
+                focusable: true
+                bordered: true
+                size: Style.space(26)
+                onClicked: root.submitApiKey()
+              }
+              Text {
+                textFormat: Text.PlainText
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Save API key"
+                color: root.dim
+                font.family: Style.font.family
+                font.pixelSize: Style.font.bodySmall
+              }
+            }
+
             Text {
               textFormat: Text.PlainText
+              visible: root.apiKeySaving || root.notice !== "" || root.serviceError !== ""
               width: parent.width
-              text: "bw-vault-setup"
-              color: Color.accent
+              text: root.apiKeySaving ? "Saving to the system keyring…"
+                : (root.notice !== "" ? root.notice : root.serviceError)
+              color: root.noticeIsError || root.serviceError !== "" ? Color.urgent : root.dim
               font.family: Style.font.family
-              font.pixelSize: Style.font.body
-              font.bold: true
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -801,7 +880,7 @@ Panel {
             width: parent.width
             // No password field on screen means no key to press — saying
             // "enter to unlock" under a form that isn't there is just noise.
-            visible: passField.visible || root.unlocking || root.serviceError !== ""
+            visible: passField.visible || root.unlocking
             text: root.unlocking
               ? (root.authPhase === "login" ? "Authenticating…" : "Unlocking…")
               : root.serviceError !== ""

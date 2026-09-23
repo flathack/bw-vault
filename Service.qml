@@ -80,6 +80,7 @@ Item {
   // kept — never the key itself. Drives whether the panel can offer an unlock
   // form at all, or has to send you to `bw-vault-setup` first.
   property bool apiKeyStored: false
+  property bool apiKeySaving: false
 
   // The master password, in transit between the keyring lookup that unlock
   // needs and the child process that consumes it. This is the one secret that
@@ -97,6 +98,8 @@ Item {
   signal totpFetched(string token, string code)
   signal totpFetchFailed(string token, string message)
   signal authFailed()
+  signal apiKeySaved()
+  signal apiKeySaveFailed(string message)
 
   // -- lifecycle -------------------------------------------------------------
 
@@ -161,11 +164,13 @@ Item {
     service.generation++
     for (var proc of [sessionLookup, statusProc, loginProc, unlockProc,
                       listProc, getProc, totpProc, apiKeyIdLookup,
-                      apiKeySecretLookup, apiKeyIdProbe, sessionStore]) {
+                      apiKeySecretLookup, apiKeyIdProbe, apiKeySaveProc,
+                      sessionStore]) {
       if (proc.running) proc.running = false
     }
     service.clearAuthEnvironment()
     service.clearSessionEnvironments()
+    apiKeySaveProc.payload = ""
     copyProc.queuedPayload = ""
     service.requestClipboardClear()
     service.heldSession = ""
@@ -176,6 +181,7 @@ Item {
     service.busy = false
     service.authPhase = ""
     service.apiKeyStored = false
+    service.apiKeySaving = false
     cacheTimer.stop()
     service.lockedOut("switched")
     Qt.callLater(function() {
@@ -225,6 +231,17 @@ Item {
   }
 
   // -- unlock ----------------------------------------------------------------
+
+  function storeApiKey(clientId, clientSecret) {
+    if (apiKeySaveProc.running || !clientId || !clientSecret) return false
+    service.error = ""
+    service.apiKeySaving = true
+    apiKeySaveProc.generation = service.generation
+    apiKeySaveProc.payload = JSON.stringify({ clientId: clientId, clientSecret: clientSecret })
+    apiKeySaveProc.stdinEnabled = true
+    apiKeySaveProc.running = true
+    return true
+  }
 
   // Credentials arrive as arguments and leave through a child's environment.
   // Nothing is retained: see clearAuthEnvironment(), which runs on exit whether
@@ -541,6 +558,34 @@ Item {
   }
 
   // -- keyring ---------------------------------------------------------------
+
+  Process {
+    id: apiKeySaveProc
+    property string payload: ""
+    property int generation: 0
+    command: [service.pluginPath + "/bin/bw-vault-storage", "store-key"]
+    stdinEnabled: true
+    stderr: StdioCollector { id: apiKeySaveErr; waitForEnd: true }
+    onStarted: {
+      write(payload + "\n")
+      payload = ""
+      stdinEnabled = false
+    }
+    onExited: function(exitCode) {
+      payload = ""
+      stdinEnabled = false
+      if (apiKeySaveProc.generation !== service.generation) return
+      service.apiKeySaving = false
+      if (exitCode === 0) {
+        service.apiKeyStored = true
+        service.error = ""
+        service.apiKeySaved()
+      } else {
+        service.error = "Could not save API key to the system keyring"
+        service.apiKeySaveFailed(service.error)
+      }
+    }
+  }
 
   Process {
     id: sessionLookup

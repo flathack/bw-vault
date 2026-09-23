@@ -23,7 +23,7 @@ What that caching does and does not cover is spelled out in [Security notes](#se
 - **Bar dropdown** — lock state at a glance; click for a search box over your vault. Enter copies the password. `ctrl+u` copies the username with no `bw` call at all, because the username is already in the cached list.
 - **Item detail** — `ctrl+enter` opens the selected item: username, password (hidden until you press `p`), current TOTP code when configured, URI, and notes.
 - **Master-password unlock** — in the dropdown. The password travels through the child process environment (`bw --passwordenv`), never argv, and its environment is cleared when the child exits.
-- **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`), which needs no interactive 2FA and skips new-device verification. Stored once per machine by `bw-vault-setup`; see [Setup](#setup).
+- **API key authentication** — authenticates with your [personal API key](https://bitwarden.com/help/personal-api-key/) (`bw login --apikey`). Enter the key in the dropdown once per connection; `bw` remains an internal dependency, with no terminal setup required.
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine and survives a shell restart.
 - **Idle cache expiry** — the cached list is forgotten after `cacheTtlMinutes` of no vault activity (15 by default). The session is untouched, so recovering costs one `bw list` and no master password.
 - **Offline copy** — a successful online list refresh writes an encrypted snapshot with passwords to local state. If the server is unreachable, the dropdown can search and copy from that snapshot while the desktop keyring is unlocked. One-time codes require the live CLI.
@@ -59,17 +59,19 @@ therefore requires a fresh review.
 
 ## Setup
 
-Once per machine, store your Bitwarden personal API key:
+Open the vault dropdown. If the selected connection has no API key, paste its `client_id` and `client_secret` from the web vault (Account Settings → Security → Keys → View API Key), then press the checkmark to save them in the OS keyring. Paste the client ID first; the dropdown may close while you switch to the browser for the secret, but the ID remains in the field when you reopen it. The secret field is cleared whenever the dropdown closes. Then enter your master password to unlock.
+
+If you prefer terminal setup, the existing command is still available:
 
 ```sh
 ~/.config/omarchy/plugins/com.aktivesolutions.bw-vault/bin/bw-vault-setup
 ```
 
-It prompts for `client_id` and `client_secret` (get them from the web vault: Account Settings → Security → Keys → View API Key) and writes them to your OS keyring. The secret is read with terminal echo off and piped to `secret-tool` on stdin, so it never appears on screen, in scrollback, or in the process list.
+It prompts for `client_id` and `client_secret` and writes them to the same OS keyring entries. The secret is read with terminal echo off and piped to `secret-tool` on stdin.
 
 `--show` reports whether a key is stored without printing the secret; `--clear` removes it.
 
-**Why a terminal command and not a screen in the plugin.** You copy the two values out of a browser one at a time, and an Omarchy bar dropdown dismisses on any click outside it — the trip back to the browser for the second value would close the form and lose the first. Version 1.x solved this with a floating overlay card that deliberately did not grab the keyboard. Dropping the overlay meant dropping that trick, so the key entry moved somewhere that has never had the problem.
+The plugin stores the key through the short-lived helper; neither field goes on a process command line. The client secret is cleared from the form after saving or closing. The client ID is retained across closes until setup succeeds.
 
 If `bw` is already logged in by some other means, you can skip this entirely: the dropdown will ask for your master password and unlock against the existing login.
 
@@ -79,7 +81,6 @@ The existing CLI account remains the `default` endpoint. For another server:
 
 ```sh
 ~/.config/omarchy/plugins/com.aktivesolutions.bw-vault/bin/bw-vault-endpoints add NAS https://vault.example.com
-~/.config/omarchy/plugins/com.aktivesolutions.bw-vault/bin/bw-vault-setup
 omarchy restart shell
 ```
 
@@ -161,7 +162,7 @@ Set these through Omarchy's bar widget settings, or directly on the widget's `sh
 Version 2.0 removes the fullscreen overlay. Two things change for you:
 
 1. **Your keybinding.** `omarchy-shell shell toggle com.aktivesolutions.bw-vault` no longer resolves to anything. Use `omarchy-shell bw-vault-bar toggle`.
-2. **First-run API key entry** moved from the overlay's floating card to `bw-vault-setup`. A key already in your keyring is picked up as-is; nothing to redo.
+2. **First-run API key entry** is now in the dropdown. A key already in your keyring is picked up as-is; nothing to redo.
 
 Item metadata is now cached between opens where 1.x dropped it on every close — see [Security notes](#security-notes) if that matters to you.
 
@@ -182,7 +183,7 @@ These are usually already present on Omarchy. If one is missing, add it with you
 - `jq: command not found` → install `jq`.
 - `secret-tool: command not found` → install `libsecret`.
 - The padlock isn't in the bar → `omarchy plugin list`, and see the note under [Install](#install).
-- The dropdown says "Not set up" → run `bw-vault-setup`.
+- The dropdown says "Not set up" → enter the API key in the two fields shown there.
 - Everything feels slow → that's `bw`. Check `cacheTtlMinutes` hasn't been set to something tiny; each expiry costs one four-second `bw list`.
 
 ## Remove
@@ -221,7 +222,7 @@ manifest.json        # plugin manifest (id: com.aktivesolutions.bw-vault)
 Service.qml          # session, item metadata, every bw child. Mounted once by the shell
 BarWidget.qml        # bar icon + dropdown: unlock, search, copy, detail
 VaultModel.js        # bw CLI command building + JSON parsing (pure JS)
-bin/bw-vault-setup   # one-time API key storage, from a terminal
+bin/bw-vault-setup   # optional terminal API key setup
 bin/bw-vault-query   # short-lived field-limiting wrapper around bw list/get/totp
 test/run             # deterministic unit, contract, fixture and lint checks
 test/demo            # run the dropdown against a fixture vault, in its own shell
