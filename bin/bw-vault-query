@@ -42,6 +42,7 @@ list)
       name: (.name // ""),
       type: (.type // 0),
       username: (.login.username // ""),
+      hasTotp: ((.login.totp // "") != ""),
       uris: ((.login.uris // []) | map({uri: (.uri // "")}))
     })
     '

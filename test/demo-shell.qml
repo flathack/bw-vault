@@ -26,7 +26,9 @@ ShellRoot {
         opened: widget.opened,
         pendingItem: widget.pendingToken !== "",
         pendingTotp: widget.pendingTotpToken !== "",
-        totp: widget.detailTotp
+        totp: widget.detailTotp,
+        listTotpCount: Object.keys(widget.listTotpCodes).length,
+        listTotpLoading: widget.listTotpPendingToken !== ""
       })
     }
   }

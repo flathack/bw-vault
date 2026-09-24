@@ -174,6 +174,13 @@ Panel {
   property int fetchSeq: 0
   property string pendingTotpToken: ""
   property int totpSeq: 0
+  // Only codes for the currently visible list and current 30-second period.
+  // Neither the service's item model nor the encrypted snapshot holds codes.
+  property var listTotpCodes: ({})
+  property var listTotpFailures: ({})
+  property string listTotpPendingToken: ""
+  property string listTotpPendingId: ""
+  property int listTotpPeriod: -1
 
   // The one open item. Holds a password and current TOTP code for as long as
   // the detail screen is showing them, and no longer — see leaveDetail().
@@ -251,6 +258,54 @@ Panel {
     Qt.callLater(function() {
       if (root.opened && root.unlocked) searchField.forceActiveFocus()
     })
+  }
+
+  function clearListTotp() {
+    if (root.listTotpPendingToken !== "" && root.svc)
+      root.svc.cancelTotp(root.listTotpPendingToken)
+    root.listTotpPendingToken = ""
+    root.listTotpPendingId = ""
+    root.listTotpCodes = ({})
+    root.listTotpFailures = ({})
+    root.listTotpPeriod = -1
+  }
+
+  function pruneListTotp() {
+    var visible = ({})
+    for (var i = 0; i < root.results.length; i++)
+      if (root.results[i].hasTotp === true) visible[root.results[i].id] = true
+    if (root.listTotpPendingToken !== "" && !visible[root.listTotpPendingId]) {
+      if (root.svc) root.svc.cancelTotp(root.listTotpPendingToken)
+      root.listTotpPendingToken = ""
+      root.listTotpPendingId = ""
+    }
+    var codes = ({})
+    var failures = ({})
+    for (var id in visible) {
+      if (root.listTotpCodes[id] !== undefined) codes[id] = root.listTotpCodes[id]
+      if (root.listTotpFailures[id] === true) failures[id] = true
+    }
+    root.listTotpCodes = codes
+    root.listTotpFailures = failures
+  }
+
+  function refreshListTotp() {
+    if (!root.opened || root.screen !== "list" || !root.unlocked || root.offline || !root.svc) return
+    var period = Math.floor(Date.now() / 30000)
+    if (period !== root.listTotpPeriod) {
+      root.clearListTotp()
+      root.listTotpPeriod = period
+    }
+    if (root.listTotpPendingToken !== "" || root.svc.fetching) return
+    for (var i = 0; i < root.results.length; i++) {
+      var item = root.results[i]
+      if (item.hasTotp !== true || root.listTotpCodes[item.id] !== undefined
+          || root.listTotpFailures[item.id] === true) continue
+      root.listTotpPendingId = item.id
+      root.listTotpPendingToken = "bar-list-totp:" + (++root.totpSeq)
+      root.svc.fetchTotp(item.id, root.listTotpPendingToken)
+      return
+    }
   }
 
   // -- filtering -------------------------------------------------------------
@@ -435,6 +490,20 @@ Panel {
     }
 
     function onTotpFetched(token, code) {
+      if (token === root.listTotpPendingToken && token !== "") {
+        if (Math.floor(Date.now() / 30000) !== root.listTotpPeriod) {
+          root.clearListTotp()
+          Qt.callLater(function() { root.refreshListTotp() })
+          return
+        }
+        var codes = Object.assign({}, root.listTotpCodes)
+        codes[root.listTotpPendingId] = String(code || "")
+        root.listTotpCodes = codes
+        root.listTotpPendingToken = ""
+        root.listTotpPendingId = ""
+        Qt.callLater(function() { root.refreshListTotp() })
+        return
+      }
       if (token !== root.pendingTotpToken) return
       root.pendingTotpToken = ""
       if (root.screen !== "detail" || !root.detail || root.detail.hasTotp !== true) return
@@ -443,15 +512,26 @@ Panel {
     }
 
     function onTotpFetchFailed(token, message) {
+      if (token === root.listTotpPendingToken && token !== "") {
+        var failures = Object.assign({}, root.listTotpFailures)
+        failures[root.listTotpPendingId] = true
+        root.listTotpFailures = failures
+        root.listTotpPendingToken = ""
+        root.listTotpPendingId = ""
+        Qt.callLater(function() { root.refreshListTotp() })
+        return
+      }
       if (token !== root.pendingTotpToken) return
       root.pendingTotpToken = ""
       if (root.screen !== "detail") return
       root.detailTotp = ""
-      root.detailTotpError = String(message || "Could not read one-time code")
+      root.detailTotpError = String(message || "Could not read one-time code") === "Another one-time code is still loading"
+        ? "Waiting for one-time code…" : String(message || "Could not read one-time code")
     }
 
     function onItemsRefreshed() {
       if (!root.opened) return
+      root.clearListTotp()
       if (root.screen === "detail") root.leaveDetail()
       root.syncScreen()
       root.rebuild()
@@ -533,6 +613,7 @@ Panel {
       root.masterPassword = ""
       root.query = ""
       root.results = []
+      root.clearListTotp()
       root.pendingToken = ""
       root.pendingIntent = ""
       root.detail = null
@@ -547,10 +628,21 @@ Panel {
 
   onQueryChanged: root.rebuild()
   onItemsChanged: if (root.opened) root.rebuild()
-  onUnlockedChanged: if (root.opened) root.syncScreen()
+  onResultsChanged: {
+    root.pruneListTotp()
+    Qt.callLater(function() { root.refreshListTotp() })
+  }
+  onOfflineChanged: if (root.offline) root.clearListTotp()
+  onUnlockedChanged: {
+    if (!root.unlocked) root.clearListTotp()
+    if (root.opened) root.syncScreen()
+  }
   onStatusChanged: if (root.opened && root.screen === "unlock")
     Qt.callLater(function() { root.focusCurrentScreen() })
-  onScreenChanged: Qt.callLater(function() { root.focusCurrentScreen() })
+  onScreenChanged: {
+    if (root.screen !== "list") root.clearListTotp()
+    Qt.callLater(function() { root.focusCurrentScreen(); root.refreshListTotp() })
+  }
 
   // Everything here filters metadata that is already in this process. Nothing
   // reads, fetches or copies a secret — a password still costs a keystroke on a
@@ -1210,6 +1302,21 @@ Panel {
     onTriggered: root.refreshDetailTotp()
   }
 
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.opened && root.screen === "detail" && root.detail
+      && root.detail.hasTotp === true && root.detailTotpError === "Waiting for one-time code…"
+    onTriggered: if (root.svc && !root.svc.fetching) root.refreshDetailTotp()
+  }
+
+  Timer {
+    interval: 1000
+    repeat: true
+    running: root.opened && root.screen === "list" && root.unlocked && !root.offline
+    onTriggered: root.refreshListTotp()
+  }
+
   // One labelled row on the detail screen. Hidden when the item has nothing
   // for it, so a secure note does not show four empty boxes.
   component DetailField: Column {
@@ -1254,6 +1361,7 @@ Panel {
     required property var modelData
 
     readonly property bool current: row.index === root.selectedIndex
+    readonly property string listCode: String(root.listTotpCodes[row.modelData.id] || "")
 
     hasCursor: rowMouse.containsMouse || row.current
     foreground: root.foreground
@@ -1285,7 +1393,8 @@ Panel {
         spacing: Style.space(1)
         anchors.left: rowGlyph.right
         anchors.leftMargin: Style.space(10)
-        anchors.right: parent.right
+        anchors.right: rowTotp.visible ? rowTotp.left : parent.right
+        anchors.rightMargin: rowTotp.visible ? Style.space(8) : 0
         anchors.verticalCenter: parent.verticalCenter
 
         Text {
@@ -1308,6 +1417,20 @@ Panel {
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
+      }
+
+      Text {
+        id: rowTotp
+        textFormat: Text.PlainText
+        visible: row.modelData.hasTotp === true
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: root.offline ? "Offline"
+          : root.listTotpFailures[row.modelData.id] === true ? "—"
+          : row.listCode ? row.listCode.replace(/^(\d{3})(\d{3})$/, "$1 $2") : "··· ···"
+        color: row.listCode ? Color.accent : root.fainter
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
       }
     }
 

@@ -50,6 +50,7 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
     assert run("secret-tool", "lookup", "service", "com.aktivesolutions.bw-vault",
                "account", "bw-client-secret") == "default-secret"
     online = json.loads(run(str(root / "bin/bw-vault-query"), "list"))
+    assert sum(item["hasTotp"] is True for item in online) == 1
     cache = base / "state/bw-vault" / ("cache-" + ident + ".enc")
     assert cache.exists()
     assert b"demo-not-a-real-password" not in cache.read_bytes()

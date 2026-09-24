@@ -44,7 +44,8 @@ require(
 )
 
 require(
-    "onScreenChanged: Qt.callLater(function() { root.focusCurrentScreen() })" in widget,
+    "onScreenChanged: {" in widget and
+    "root.focusCurrentScreen(); root.refreshListTotp()" in widget,
     "screen changes must explicitly transfer keyboard focus",
 )
 require(
@@ -117,6 +118,12 @@ require(
     'if (!force && (service.status === "locked" || service.status === "unauthenticated")) return' in service and
     'root.screen === "unlock" ? "Retry vault connection"' in widget,
     "reopening a settled locked vault must be cheap and offer an explicit retry",
+)
+require(
+    'root.clearListTotp()' in widget and
+    'if (root.screen !== "list") root.clearListTotp()' in widget and
+    'if (!root.unlocked) root.clearListTotp()' in widget,
+    "list TOTP codes must clear when the panel, screen, or session changes",
 )
 
 print("Security contract tests passed")

@@ -17,6 +17,7 @@ const rawList = JSON.stringify([
     name: '<img src="https://should-not-load.invalid/pixel"> Example',
     type: 1,
     username: "ada",
+    hasTotp: true,
     uris: [{ uri: "https://example.test" }],
     password: "must-not-survive",
     notes: "recovery-code-must-not-survive",
@@ -26,6 +27,7 @@ const rawList = JSON.stringify([
 const parsed = model.parseList(rawList);
 assert.equal(parsed.length, 1);
 assert.deepEqual(Object.keys(parsed[0]).sort(), [
+  "hasTotp",
   "id",
   "name",
   "searchKey",
@@ -35,6 +37,7 @@ assert.deepEqual(Object.keys(parsed[0]).sort(), [
 ]);
 assert.equal(JSON.stringify(parsed).includes("must-not-survive"), false);
 assert.equal(parsed[0].name.startsWith("<img"), true);
+assert.equal(parsed[0].hasTotp, true);
 assert.equal(model.matchesQuery(parsed[0], "exa"), true);
 assert.equal(model.matchesQuery(parsed[0], "missing"), false);
 

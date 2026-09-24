@@ -449,6 +449,14 @@ Item {
     return true
   }
 
+  function cancelTotp(token) {
+    if (!token || !totpProc.running || totpProc.token !== token) return
+    // Let the in-flight child finish before this Process can be reused. Its
+    // empty token makes the result disposable and avoids an old onExited
+    // handler clearing a newer request's buffers.
+    totpProc.token = ""
+  }
+
   // -- lock ------------------------------------------------------------------
 
   function lock() {
@@ -883,6 +891,7 @@ Item {
       totpProc.output = ""
       totpProc.errorOutput = ""
       totpProc.environment = VaultModel.nonInteractiveEnvironment()
+      if (!token) return
       if (requestGeneration !== service.generation) return
       if (exitCode !== 0 || !code) {
         service.totpFetchFailed(token, err || "Could not read one-time code")

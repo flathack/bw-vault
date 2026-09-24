@@ -17,8 +17,9 @@ list_json=$("$root/bin/bw-vault-query" list)
 jq -e '
   length == 8
   and all(.[];
-    ((keys | sort) == (["id", "name", "type", "uris", "username"] | sort))
+    ((keys | sort) == (["hasTotp", "id", "name", "type", "uris", "username"] | sort))
   )
+  and (map(select(.hasTotp == true)) | length == 1)
 ' <<<"$list_json" >/dev/null
 
 if grep -Eq 'demo-not-a-real-password|aaaa-bbbb|Second account, org SSO|totp-must-not-survive|hidden-field-must-not-survive' <<<"$list_json"; then

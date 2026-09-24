@@ -283,7 +283,7 @@ def main():
         if items is None:
             fail("No offline cache available")
         if kind == "list":
-            print(json.dumps([{"id": i.get("id", ""), "name": i.get("name", ""), "type": i.get("type", 0), "username": (i.get("login") or {}).get("username", ""), "uris": (i.get("login") or {}).get("uris") or []} for i in items]))
+            print(json.dumps([{"id": i.get("id", ""), "name": i.get("name", ""), "type": i.get("type", 0), "username": (i.get("login") or {}).get("username", ""), "hasTotp": (i.get("login") or {}).get("hasTotp") is True, "uris": (i.get("login") or {}).get("uris") or []} for i in items]))
         else:
             item = next((i for i in items if i.get("id") == kind), None)
             if item is None:

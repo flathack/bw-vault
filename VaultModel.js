@@ -213,6 +213,7 @@ function parseList(raw) {
       id: String(it.id || ""),
       name: name,
       username: username,
+      hasTotp: it.hasTotp === true,
       // Folded once here so matchesQuery doesn't lowercase both fields for every
       // item on every keystroke.
       searchKey: (name + " " + username).toLowerCase(),
