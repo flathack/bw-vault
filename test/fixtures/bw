@@ -49,6 +49,7 @@ list)
   [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }
   cat "$vault" ;;
 get)
+  [[ ${BW_FIXTURE_GET_FAIL:-0} != 1 ]] || { echo 'get disabled for cache test' >&2; exit 1; }
   [[ ${BW_FIXTURE_OFFLINE:-0} != 1 ]] || { echo 'server unavailable' >&2; exit 1; }
   [[ ${BW_FIXTURE_LOCKED:-0} != 1 ]] || { echo 'Vault is locked.' >&2; exit 1; }
   sleep "$delay"

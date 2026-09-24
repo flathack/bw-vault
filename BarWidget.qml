@@ -166,7 +166,7 @@ Panel {
   // is what actually zeroes it.
   property string masterPassword: ""
 
-  // Whatever `bw get` is currently fetching, as a token and an intent. Never a
+  // Whatever detail read is currently fetching, as a token and an intent. Never a
   // password: see onItemFetched.
   property string pendingToken: ""
   property string pendingIntent: ""
@@ -319,9 +319,8 @@ Panel {
     root.say("Copied username · " + target.name, false)
   }
 
-  // The password is not cached, so this costs one `bw get` — around four
-  // seconds cold. The panel says it is fetching rather than pretending the copy
-  // already happened.
+  // The encrypted snapshot serves details quickly after a successful list.
+  // If it is unavailable, the helper falls back to `bw get`.
   function fetchSelected(intent) {
     if (root.pendingToken !== "") {
       root.say("Another item is still loading", true)
@@ -395,7 +394,7 @@ Panel {
     // The password lands here and goes no further than this widget: to the
     // clipboard, or onto the detail screen for as long as it is showing. The
     // service never assigned it to anything.
-    function onItemFetched(token, item, password) {
+    function onItemFetched(token, item, password, fromCache) {
       if (token !== root.pendingToken) return
       var intent = root.pendingIntent
       root.pendingToken = ""
@@ -406,7 +405,8 @@ Panel {
         root.detailPassword = String(password || "")
         root.detailTotp = ""
         root.detailTotpError = ""
-        root.notice = ""
+        if (fromCache) root.say("Encrypted cache · refresh after vault changes", false)
+        else root.notice = ""
         if (item && item.hasTotp === true) root.refreshDetailTotp()
         return
       }
@@ -415,7 +415,7 @@ Panel {
         return
       }
       root.svc.copyValue(password)
-      root.say("Copied password · " + root.pendingLabel, false)
+      root.say((fromCache ? "Copied cached password · " : "Copied password · ") + root.pendingLabel, false)
       noticeTimer.restart()
     }
 
@@ -717,6 +717,21 @@ Panel {
           }
 
           PanelActionButton {
+            id: refreshButton
+            visible: root.screen === "list" && root.unlocked
+            enabled: !root.busy
+            anchors.right: lockButton.left
+            anchors.rightMargin: Style.space(4)
+            anchors.verticalCenter: parent.verticalCenter
+            iconText: "󰑐"
+            tooltipText: "Refresh vault and encrypted cache"
+            foreground: root.foreground
+            fontFamily: Style.font.family
+            size: Style.space(22)
+            onClicked: if (root.svc) root.svc.refresh(true)
+          }
+
+          PanelActionButton {
             id: editConnectionsButton
             visible: root.screen === "unlock"
             enabled: !root.apiKeySaving
@@ -736,7 +751,8 @@ Panel {
             anchors.leftMargin: Style.space(14)
             anchors.right: parent.right
             anchors.rightMargin: ((lockButton.visible ? lockButton.size : 0)
-              + (editConnectionsButton.visible ? editConnectionsButton.size : 0))
+              + (editConnectionsButton.visible ? editConnectionsButton.size : 0)
+              + (refreshButton.visible ? refreshButton.size + Style.space(4) : 0))
               + ((lockButton.visible || editConnectionsButton.visible) ? Style.space(12) : 0)
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)

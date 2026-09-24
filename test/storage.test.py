@@ -21,8 +21,9 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
                BW_FIXTURE_STATE=str(fixture),
                PATH=str(root / "test/fixtures") + ":" + os.environ["PATH"])
 
-    def run(*args, offline=False, input_data=None):
-        result = subprocess.run(args, env=dict(env, BW_FIXTURE_OFFLINE="1" if offline else "0"),
+    def run(*args, offline=False, input_data=None, extra_env=None):
+        result = subprocess.run(args, env=dict(env, BW_FIXTURE_OFFLINE="1" if offline else "0",
+                                            **(extra_env or {})),
                                 input=input_data, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         return result.stdout
@@ -66,7 +67,13 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
     assert missing.returncode != 0
     run(str(root / "bin/bw-vault-endpoints"), "select", ident)
     item = online[0]["id"]
+    fast_detail = json.loads(run(str(root / "bin/bw-vault-query"), "get", item,
+                                 extra_env={"BW_VAULT_CACHE_OK": "1", "BW_FIXTURE_GET_FAIL": "1"}))
+    assert fast_detail["id"] == item
+    assert fast_detail["password"] == "demo-not-a-real-password-1"
     assert json.loads(run(str(root / "bin/bw-vault-query"), "get", item, offline=True))["id"] == item
+    run(str(root / "bin/bw-vault-query"), "list", extra_env={"BW_FIXTURE_KEYRING_FAIL": "1"})
+    assert not cache.exists()
     run("secret-tool", "store", "service", "com.aktivesolutions.bw-vault",
         "account", "bw-session-" + ident)
     run(str(root / "bin/bw-vault-endpoints"), "update", ident, "NAS new", "https://other.example.test")

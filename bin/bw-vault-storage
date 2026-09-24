@@ -219,6 +219,10 @@ def main():
         if not isinstance(payload, dict) or not endpoint(data, data["selected"]):
             fail("Invalid API key")
         store_api_key(data["selected"], payload)
+    elif action == "invalidate" and len(args) == 1:
+        if not endpoint(data, args[0]):
+            fail("Unknown endpoint")
+        cache_path(args[0]).unlink(missing_ok=True)
     elif action == "snapshot" and len(args) == 1:
         ident = args[0]
         items = json.load(sys.stdin)

@@ -12,9 +12,9 @@ Rewritten in Quickshell/QML from the [bw-tui](https://github.com/keboy/bw-tui) B
 
 ## How it's put together
 
-`bw` is a Node program and a cold start costs about four seconds. That number shapes everything here.
+`bw` is a Node program and a cold start can cost several seconds. That number shapes everything here.
 
-The session, the item list and every `bw` child live in a **service** the shell mounts once and keeps. The dropdown is a view onto it. Opening the dropdown against a warm list costs nothing measurable — filtering 215 items lands well under a tenth of a second, because no `bw` runs at all. Passwords and current one-time codes are fetched only when needed and never enter the list cache.
+The session, the item list and every `bw` child live in a **service** the shell mounts once and keeps. The dropdown is a view onto it. Opening the dropdown against a warm list costs nothing measurable. A successful list refresh also writes an encrypted snapshot. Opening or copying one of those items reads the snapshot without starting `bw` again. Current one-time codes still come from `bw` on demand.
 
 What that caching does and does not cover is spelled out in [Security notes](#security-notes). The long-lived QML service keeps only item metadata. An encrypted disk snapshot also holds passwords for offline use; one-time codes are never saved.
 
@@ -27,6 +27,7 @@ What that caching does and does not cover is spelled out in [Security notes](#se
 - **Session persistence** — the session key is mirrored to the OS keyring (Secret Service via `secret-tool`), so the master password is asked for once per machine and survives a shell restart.
 - **Idle cache expiry** — the cached list is forgotten after `cacheTtlMinutes` of no vault activity (15 by default). The session is untouched, so recovering costs one `bw list` and no master password.
 - **Offline copy** — a successful online list refresh writes an encrypted snapshot with passwords to local state. If the server is unreachable, the dropdown can search and copy from that snapshot while the desktop keyring is unlocked. One-time codes require the live CLI.
+- **Fast item detail** — after a successful list refresh, passwords and notes are decrypted from that snapshot only when requested. If the snapshot is unavailable, the helper falls back to `bw get`. The refresh icon in the list updates the vault and snapshot after changes made elsewhere.
 - **Multiple endpoints** — each added server has its own CLI data directory, session, API key and encrypted snapshot. Manage them with `bw-vault-endpoints`.
 - **Clipboard protection** — credential copies use Wayland's sensitive-data hint and are wiped about 20 seconds later, but only if the clipboard still holds the value this plugin copied.
 - **Native Omarchy theming** — built on `Panel`, `KeyboardPanel`, `TextField` and `Color.*` tokens, so it matches your theme.
@@ -122,7 +123,7 @@ omarchy-shell bw-vault-bar search github
 |-----|--------|
 | `type` | Filter items |
 | `↑` `↓` | Move through results |
-| `enter` | Copy the password (one `bw get`, about four seconds — the panel says it's fetching) |
+| `enter` | Copy the password from the encrypted snapshot (falls back to `bw get` if unavailable) |
 | `ctrl+u` | Copy the username (instant; already in the cached list) |
 | `ctrl+enter` | Open item detail |
 | `ctrl+l` | Lock the vault |
@@ -184,7 +185,7 @@ These are usually already present on Omarchy. If one is missing, add it with you
 - `secret-tool: command not found` → install `libsecret`.
 - The padlock isn't in the bar → `omarchy plugin list`, and see the note under [Install](#install).
 - The dropdown says "Not set up" → enter the API key in the two fields shown there.
-- Everything feels slow → that's `bw`. Check `cacheTtlMinutes` hasn't been set to something tiny; each expiry costs one four-second `bw list`.
+- The list feels slow → that's a `bw list` refresh. Check `cacheTtlMinutes` hasn't been set too low. Individual items use the encrypted snapshot after that refresh.
 
 ## Remove
 
@@ -200,6 +201,7 @@ omarchy plugin remove com.aktivesolutions.bw-vault
 - Credentials handed to `bw login` / `bw unlock` have that environment cleared when the child exits, on both the success and failure paths. Before 2.0 the master password stayed set on the Process until the next unlock overwrote it.
 - **Item metadata is cached between opens.** A short-lived helper reduces `bw list` output to names, usernames, ids, types and URIs before it enters the long-lived QML process. Passwords and notes never enter the service's list buffer. The metadata lives until you lock or `cacheTtlMinutes` of idleness passes.
 - **Offline snapshots contain passwords and notes.** The helper selects item IDs, names, types, usernames, passwords, notes, URIs and a TOTP presence flag, then encrypts them with Fernet before writing a mode-0600 file. TOTP seeds and custom fields are omitted. The random encryption key lives in Secret Service, scoped to the endpoint. This protects the disk copy while the keyring is locked; it does not protect it from software running as you while your keyring is unlocked. Locking BW Vault clears the QML list, but the encrypted offline snapshot remains available for future offline use.
+- **Detail reads use the encrypted snapshot only after a successful list read for the active session.** A failed snapshot update disables the fast path and deletes the old snapshot. The list's refresh icon fetches current items and replaces the snapshot; until then, details reflect its last successful refresh.
 - Item passwords are fetched on demand through the same field-limiting helper. Reads are serialized, so a delayed response cannot be attributed to a newer selection. The password is separated from item metadata before the service emits it, and temporary process buffers and `BW_SESSION` environments are cleared after each request. The widget retains a password only while its detail screen is showing it.
 - TOTP seeds never enter QML. The detail helper emits only a `hasTotp` boolean; a separate `bw get totp <id>` invocation asks the official Bitwarden CLI to calculate the current code. The displayed code is cleared when detail closes or the vault locks and refreshes every 30 seconds while visible.
 - The detail screen is the only place a secret is drawn. Passwords remain masked until you press `p`; one-time codes are shown directly because they are short-lived. A bar dropdown sits in the open — remember that before opening an item during screen sharing or a meeting.

@@ -63,6 +63,7 @@ Item {
   property bool busy: false
   property string error: ""
   property bool offline: false
+  property bool cacheReady: false
 
   // Metadata only. See parseList() — no passwords pass through here.
   property var items: []
@@ -93,7 +94,7 @@ Item {
   signal unlockSucceeded()
   signal itemsRefreshed()
   signal lockedOut(string reason)
-  signal itemFetched(string token, var item, string password)
+  signal itemFetched(string token, var item, string password, bool fromCache)
   signal itemFetchFailed(string token, string message)
   signal totpFetched(string token, string code)
   signal totpFetchFailed(string token, string message)
@@ -129,8 +130,9 @@ Item {
   // Bring the session up to date. Cheap when the cache is warm: a warm cache
   // means a live session, and re-listing would cost a cold start for nothing.
   function refresh(force) {
-    if (!force && service.itemsLoaded && service.unlocked) {
-      service.touch()
+    if (service.unlocked) {
+      if (!force && service.itemsLoaded) service.touch()
+      else if (!listProc.running) service.loadItems(false)
       return
     }
     service.error = ""
@@ -155,6 +157,7 @@ Item {
     service.generation++
     service.items = []
     service.itemsLoaded = false
+    service.cacheReady = false
     cacheTimer.stop()
   }
 
@@ -176,6 +179,7 @@ Item {
     service.heldSession = ""
     service.items = []
     service.itemsLoaded = false
+    service.cacheReady = false
     service.offline = false
     service.error = ""
     service.busy = false
@@ -377,6 +381,7 @@ Item {
     }
     listProc.speculative = speculative === true
     listProc.generation = service.generation
+    service.cacheReady = false
     service.busy = true
     service.error = ""
     listProc.command = VaultModel.listCommand(service.helperPath)
@@ -413,7 +418,10 @@ Item {
     getProc.generation = service.generation
     getProc.output = ""
     getProc.command = VaultModel.getCommand(service.helperPath, id)
-    getProc.environment = VaultModel.sessionEnvironment(service.heldSession)
+    var env = VaultModel.sessionEnvironment(service.heldSession)
+    if (service.cacheReady && service.itemsLoaded && service.unlocked)
+      env.BW_VAULT_CACHE_OK = "1"
+    getProc.environment = env
     getProc.running = true
     return true
   }
@@ -477,6 +485,7 @@ Item {
     service.heldSession = ""
     service.items = []
     service.itemsLoaded = false
+    service.cacheReady = false
     cacheTimer.stop()
     service.status = "locked"
     service.offline = false
@@ -499,6 +508,7 @@ Item {
     service.heldSession = ""
     service.items = []
     service.itemsLoaded = false
+    service.cacheReady = false
     cacheTimer.stop()
     service.clearSessionEnvironments()
     service.lockedOut("expired")
@@ -786,6 +796,7 @@ Item {
       if (requestGeneration !== service.generation) return
       if (exitCode !== 0) {
         service.offline = false
+        service.cacheReady = false
         if (speculative) {
           service.sessionDied()
           return
@@ -795,6 +806,7 @@ Item {
         return
       }
       service.offline = err.indexOf("BW_VAULT_OFFLINE") !== -1
+      service.cacheReady = err.indexOf("BW_VAULT_CACHE_FAILED") === -1
       service.error = service.offline ? "Using encrypted offline copy"
         : (err.indexOf("BW_VAULT_CACHE_FAILED") !== -1 ? "Offline copy could not be updated" : "")
       service.onListOutput(raw)
@@ -836,7 +848,8 @@ Item {
       }
       var password = String(item.password || "")
       item.password = ""
-      service.itemFetched(token, item, password)
+      service.itemFetched(token, item, password,
+        err.indexOf("BW_VAULT_CACHE_HIT") !== -1 || err.indexOf("BW_VAULT_OFFLINE") !== -1)
     }
   }
 
@@ -945,6 +958,7 @@ Item {
         apiKeyStored: service.apiKeyStored,
         items: service.items.length,
         itemsLoaded: service.itemsLoaded,
+        cacheReady: service.cacheReady,
         cacheTtlMinutes: service.cacheTtlMinutes,
         generation: service.generation,
         error: service.error

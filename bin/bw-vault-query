@@ -30,6 +30,7 @@ list)
   if raw=$(bw-vault-cli list items 2>"$error_file"); then
     if ! printf '%s\n' "$raw" | bw-vault-storage snapshot "$(bw-vault-endpoint)"; then
       echo BW_VAULT_CACHE_FAILED >&2
+      bw-vault-storage invalidate "$(bw-vault-endpoint)" || true
     fi
     printf '%s\n' "$raw" | jq -c '
     map({
@@ -48,7 +49,10 @@ list)
   ;;
 get)
   [[ $# -eq 2 && -n $2 ]] || fail "usage: bw-vault-query get <item-id>"
-  if raw=$(bw-vault-cli get item "$2" 2>"$error_file"); then
+  if [[ ${BW_VAULT_CACHE_OK:-0} == 1 ]] && cached=$(bw-vault-storage read "$(bw-vault-endpoint)" "$2" 2>/dev/null); then
+    echo BW_VAULT_CACHE_HIT >&2
+    printf '%s\n' "$cached"
+  elif raw=$(bw-vault-cli get item "$2" 2>"$error_file"); then
     printf '%s\n' "$raw" | jq -c '
     {
       id: (.id // ""),

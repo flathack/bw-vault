@@ -35,7 +35,7 @@ require(text_blocks == plain_text_guards, "every QML Text block must force Plain
 
 require("if (getProc.running)" in service, "fetchItem must reject overlapping requests")
 require(
-    "signal itemFetched(string token, var item, string password)" in service,
+    "signal itemFetched(string token, var item, string password, bool fromCache)" in service,
     "password must travel separately from cached item metadata",
 )
 require(
