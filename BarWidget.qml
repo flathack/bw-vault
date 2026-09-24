@@ -208,6 +208,8 @@ Panel {
     ? (root.apiKeyStored ? "Not logged in" : "Not set up")
     : root.status === "checking"
       ? "Checking…"
+      : root.status === "unavailable"
+        ? "Server unavailable"
       : root.unlocked
         ? (root.offline ? "Offline · " : "") + (root.itemsLoaded ? root.items.length + (root.items.length === 1 ? " item" : " items") : "Unlocked")
         : "Locked"
@@ -236,6 +238,9 @@ Panel {
   }
 
   function leaveDetail() {
+    root.pendingToken = ""
+    root.pendingIntent = ""
+    root.pendingLabel = ""
     root.detail = null
     root.detailPassword = ""
     root.detailTotp = ""
@@ -447,6 +452,7 @@ Panel {
 
     function onItemsRefreshed() {
       if (!root.opened) return
+      if (root.screen === "detail") root.leaveDetail()
       root.syncScreen()
       root.rebuild()
       Qt.callLater(function() {
@@ -718,13 +724,13 @@ Panel {
 
           PanelActionButton {
             id: refreshButton
-            visible: root.screen === "list" && root.unlocked
+            visible: (root.screen === "list" && root.unlocked) || root.screen === "unlock"
             enabled: !root.busy
-            anchors.right: lockButton.left
+            anchors.right: root.screen === "unlock" ? editConnectionsButton.left : lockButton.left
             anchors.rightMargin: Style.space(4)
             anchors.verticalCenter: parent.verticalCenter
             iconText: "󰑐"
-            tooltipText: "Refresh vault and encrypted cache"
+            tooltipText: root.screen === "unlock" ? "Retry vault connection" : "Refresh vault and encrypted cache"
             foreground: root.foreground
             fontFamily: Style.font.family
             size: Style.space(22)

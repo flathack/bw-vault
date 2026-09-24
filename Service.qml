@@ -135,6 +135,8 @@ Item {
       else if (!listProc.running) service.loadItems(false)
       return
     }
+    if (!force && (service.status === "locked" || service.status === "unauthenticated")) return
+    if (service.busy) return
     service.error = ""
     service.status = "checking"
     service.busy = true
@@ -797,6 +799,12 @@ Item {
       if (exitCode !== 0) {
         service.offline = false
         service.cacheReady = false
+        if (err.indexOf("BW_VAULT_OFFLINE") !== -1) {
+          service.status = "unavailable"
+          service.error = "Vault unavailable and no offline copy is ready"
+          service.busy = false
+          return
+        }
         if (speculative) {
           service.sessionDied()
           return

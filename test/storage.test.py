@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 from cryptography.fernet import Fernet
 
 root = Path(__file__).resolve().parent.parent
@@ -88,5 +89,39 @@ with tempfile.TemporaryDirectory(prefix="bw-vault-storage-test-") as tmp:
     removed_key = subprocess.run(["secret-tool", "lookup", "service", "com.aktivesolutions.bw-vault",
                                   "account", "bw-client-secret-" + ident], env=env, capture_output=True)
     assert removed_key.returncode != 0
+
+    # A query keeps its original endpoint after selection changes. A URL edit
+    # for that same endpoint makes the old response ineligible for the cache.
+    race_id = run(str(root / "bin/bw-vault-endpoints"), "add", "Race", "https://race.example.test").strip()
+    race_cache = base / "state/bw-vault" / ("cache-" + race_id + ".enc")
+    started = base / "list-started"
+
+    def delayed_list():
+        started.unlink(missing_ok=True)
+        proc = subprocess.Popen([str(root / "bin/bw-vault-query"), "list"],
+                                env=dict(env, BW_FIXTURE_DELAY="1", BW_FIXTURE_LIST_STARTED=str(started)),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(100):
+            if started.exists():
+                break
+            time.sleep(0.02)
+        assert started.exists(), "delayed list never started"
+        return proc
+
+    proc = delayed_list()
+    run(str(root / "bin/bw-vault-endpoints"), "select", "default")
+    stdout, stderr = proc.communicate(timeout=5)
+    assert proc.returncode == 0, stderr
+    assert json.loads(stdout)
+    assert race_cache.exists()
+    assert not (base / "state/bw-vault/cache-default.enc").exists()
+
+    run(str(root / "bin/bw-vault-endpoints"), "select", race_id)
+    proc = delayed_list()
+    run(str(root / "bin/bw-vault-endpoints"), "update", race_id, "Race", "https://changed.example.test")
+    stdout, stderr = proc.communicate(timeout=5)
+    assert proc.returncode == 0, stderr
+    assert "BW_VAULT_CACHE_FAILED" in stderr
+    assert not race_cache.exists()
 
 print("Endpoint and offline cache tests passed")

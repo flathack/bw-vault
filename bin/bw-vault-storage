@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Endpoint registry and encrypted offline snapshot. No secret is printed by management commands."""
 import json
+import hashlib
+import fcntl
 import os
 import re
 import secrets
@@ -107,6 +109,20 @@ def endpoint(data, ident):
     return next((e for e in data["endpoints"] if e["id"] == ident), None)
 
 
+def endpoint_revision(entry):
+    if entry.get("revision"):
+        return entry["revision"]
+    url = entry.get("url") or (legacy_url() if entry["id"] == "default" and not entry.get("managed") else "")
+    return hashlib.sha256(json.dumps([url.rstrip("/"), bool(entry.get("managed"))]).encode()).hexdigest()
+
+
+def checked_endpoint(data, ident, revision):
+    entry = endpoint(data, ident)
+    if not entry or endpoint_revision(entry) != revision:
+        fail("Endpoint changed during query")
+    return entry
+
+
 def key(ident, create=False):
     account = "offline-cache-" + ident
     found = subprocess.run(["secret-tool", "lookup", "service", SERVICE, "account", account], capture_output=True)
@@ -155,8 +171,20 @@ def main():
         fail("usage: bw-vault-storage <list|add|remove|select|snapshot|read>")
     data = read_registry()
     action = args.pop(0)
+    # URL changes and cache writes share one lock. Keep it for the whole
+    # management operation, including secret/cache invalidation.
+    if action in ("update", "remove", "invalidate"):
+        BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock = (BASE / ".endpoint.lock").open("a+b")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = read_registry()
     if action == "list" and not args:
         print(json.dumps(public_registry(data)))
+    elif action == "context" and not args:
+        entry = endpoint(data, data["selected"])
+        if not entry:
+            fail("Unknown endpoint")
+        print(json.dumps({"id": entry["id"], "revision": endpoint_revision(entry)}))
     elif action == "add" and len(args) == 2:
         name, url = args
         if not name.strip() or not valid_url(url):
@@ -164,7 +192,8 @@ def main():
         ident = secrets.token_hex(8)
         directory = BASE / "cli" / ident
         configure_directory(directory, url)
-        data["endpoints"].append({"id": ident, "name": name.strip(), "url": url.rstrip("/")})
+        data["endpoints"].append({"id": ident, "name": name.strip(), "url": url.rstrip("/"),
+                                  "revision": secrets.token_hex(16)})
         data["selected"] = ident
         write_registry(data)
         print(ident)
@@ -196,6 +225,7 @@ def main():
                 if staged.exists():
                     shutil.rmtree(staged)
             current["managed"] = True
+            current["revision"] = secrets.token_hex(16)
         current["name"] = name.strip()
         current["url"] = url.rstrip("/")
         write_registry(data)
@@ -219,15 +249,15 @@ def main():
         if not isinstance(payload, dict) or not endpoint(data, data["selected"]):
             fail("Invalid API key")
         store_api_key(data["selected"], payload)
-    elif action == "invalidate" and len(args) == 1:
-        if not endpoint(data, args[0]):
-            fail("Unknown endpoint")
+    elif action == "invalidate" and len(args) == 2:
+        checked_endpoint(data, args[0], args[1])
         cache_path(args[0]).unlink(missing_ok=True)
-    elif action == "snapshot" and len(args) == 1:
-        ident = args[0]
+    elif action == "snapshot" and len(args) == 2:
+        ident, revision = args
         items = json.load(sys.stdin)
-        if not isinstance(items, list) or not endpoint(data, ident):
+        if not isinstance(items, list):
             fail("Invalid snapshot")
+        checked_endpoint(read_registry(), ident, revision)
         minimized = []
         for item in items:
             if not isinstance(item, dict):
@@ -239,9 +269,16 @@ def main():
                                         "password": login.get("password", ""),
                                         "uris": login.get("uris") or [],
                                         "hasTotp": bool(login.get("totp"))}})
-        cache_write(ident, minimized)
-    elif action == "read" and len(args) == 2:
-        ident, kind = args
+        # Serialize cache replacement with an endpoint URL update. Recheck
+        # after waiting for the lock so an old response cannot repopulate it.
+        BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with (BASE / ".endpoint.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            checked_endpoint(read_registry(), ident, revision)
+            cache_write(ident, minimized)
+    elif action == "read" and len(args) == 3:
+        ident, revision, kind = args
+        checked_endpoint(data, ident, revision)
         items = cache_read(ident)
         if items is None:
             fail("No offline cache available")

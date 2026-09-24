@@ -102,4 +102,21 @@ require(
     "locking must serialize session-store termination before keyring clear",
 )
 
+require(
+    'if (err.indexOf("BW_VAULT_OFFLINE") !== -1)' in service and
+    'service.status = "unavailable"' in service and
+    'root.status === "unavailable"' in widget,
+    "a network outage without a cache must preserve the session and show unavailable",
+)
+require(
+    'if (root.screen === "detail") root.leaveDetail()' in widget and
+    'root.pendingToken = ""' in widget.split('function leaveDetail()', 1)[1].split('// -- filtering', 1)[0],
+    "list refresh must clear detail secrets and pending detail requests",
+)
+require(
+    'if (!force && (service.status === "locked" || service.status === "unauthenticated")) return' in service and
+    'root.screen === "unlock" ? "Retry vault connection"' in widget,
+    "reopening a settled locked vault must be cheap and offer an explicit retry",
+)
+
 print("Security contract tests passed")

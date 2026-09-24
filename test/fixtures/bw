@@ -45,6 +45,7 @@ lock)
 list)
   [[ ${BW_FIXTURE_OFFLINE:-0} != 1 ]] || { echo 'server unavailable' >&2; exit 1; }
   [[ ${BW_FIXTURE_LOCKED:-0} != 1 ]] || { echo 'Vault is locked.' >&2; exit 1; }
+  if [[ -n ${BW_FIXTURE_LIST_STARTED:-} ]]; then touch "$BW_FIXTURE_LIST_STARTED"; fi
   sleep "$delay"
   [[ -f $state/unlocked ]] || { echo "Vault is locked." >&2; exit 1; }
   cat "$vault" ;;

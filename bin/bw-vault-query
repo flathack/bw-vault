@@ -15,6 +15,10 @@ fail() {
 command -v bw >/dev/null 2>&1 || fail "bw not found"
 command -v bw-vault-cli >/dev/null 2>&1 || fail "bw-vault-cli not found"
 command -v jq >/dev/null 2>&1 || fail "jq not found"
+context=$(bw-vault-storage context) || fail "Could not resolve endpoint"
+endpoint_id=$(jq -r '.id' <<<"$context")
+endpoint_revision=$(jq -r '.revision' <<<"$context")
+export BW_VAULT_ENDPOINT_ID="$endpoint_id"
 
 error_file=$(mktemp)
 chmod 600 "$error_file"
@@ -28,9 +32,9 @@ case "${1:-}" in
 list)
   [[ $# -eq 1 ]] || fail "usage: bw-vault-query list"
   if raw=$(bw-vault-cli list items 2>"$error_file"); then
-    if ! printf '%s\n' "$raw" | bw-vault-storage snapshot "$(bw-vault-endpoint)"; then
+    if ! printf '%s\n' "$raw" | bw-vault-storage snapshot "$endpoint_id" "$endpoint_revision"; then
       echo BW_VAULT_CACHE_FAILED >&2
-      bw-vault-storage invalidate "$(bw-vault-endpoint)" || true
+      bw-vault-storage invalidate "$endpoint_id" "$endpoint_revision" || true
     fi
     printf '%s\n' "$raw" | jq -c '
     map({
@@ -44,12 +48,12 @@ list)
   else
     network_failure || fail "Could not list items"
     echo BW_VAULT_OFFLINE >&2
-    bw-vault-storage read "$(bw-vault-endpoint)" list
+    bw-vault-storage read "$endpoint_id" "$endpoint_revision" list
   fi
   ;;
 get)
   [[ $# -eq 2 && -n $2 ]] || fail "usage: bw-vault-query get <item-id>"
-  if [[ ${BW_VAULT_CACHE_OK:-0} == 1 ]] && cached=$(bw-vault-storage read "$(bw-vault-endpoint)" "$2" 2>/dev/null); then
+  if [[ ${BW_VAULT_CACHE_OK:-0} == 1 ]] && cached=$(bw-vault-storage read "$endpoint_id" "$endpoint_revision" "$2" 2>/dev/null); then
     echo BW_VAULT_CACHE_HIT >&2
     printf '%s\n' "$cached"
   elif raw=$(bw-vault-cli get item "$2" 2>"$error_file"); then
@@ -68,7 +72,7 @@ get)
   else
     network_failure || fail "Could not read item"
     echo BW_VAULT_OFFLINE >&2
-    bw-vault-storage read "$(bw-vault-endpoint)" "$2"
+    bw-vault-storage read "$endpoint_id" "$endpoint_revision" "$2"
   fi
   ;;
 totp)
