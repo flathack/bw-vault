@@ -79,8 +79,8 @@ def store_api_key(ident, payload):
     if not isinstance(client_id, str) or not client_id.strip() or not isinstance(client_secret, str) or not client_secret:
         fail("Client ID and client secret are required")
     suffix = "" if ident == "default" else "-" + ident
-    for account, label, value in (("bw-client-secret" + suffix, "BW Vault client secret", client_secret),
-                                  ("bw-client-id" + suffix, "BW Vault client ID", client_id.strip())):
+    for account, label, value in (("bw-client-secret" + suffix, "FlatVault client secret", client_secret),
+                                  ("bw-client-id" + suffix, "FlatVault client ID", client_id.strip())):
         stored = subprocess.run(["secret-tool", "store", "--label=" + label,
                                  "service", SERVICE, "account", account],
                                 input=value.encode(), capture_output=True)
@@ -131,7 +131,7 @@ def key(ident, create=False):
     if not create:
         return None
     value = Fernet.generate_key()
-    stored = subprocess.run(["secret-tool", "store", "--label=BW Vault offline cache", "service", SERVICE, "account", account], input=value, capture_output=True)
+    stored = subprocess.run(["secret-tool", "store", "--label=FlatVault offline cache", "service", SERVICE, "account", account], input=value, capture_output=True)
     if stored.returncode:
         fail("Offline cache unavailable: keyring could not store its key")
     return value

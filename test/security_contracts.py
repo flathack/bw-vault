@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import json
 import re
 
 
@@ -9,11 +10,20 @@ service = (ROOT / "Service.qml").read_text()
 widget = (ROOT / "BarWidget.qml").read_text()
 model = (ROOT / "VaultModel.js").read_text()
 helper = (ROOT / "bin" / "bw-vault-query").read_text()
+manifest = json.loads((ROOT / "manifest.json").read_text())
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+require(manifest["name"] == "FlatVault" and manifest["barWidget"]["displayName"] == "FlatVault",
+        "plugin and bar names must show FlatVault")
+require(manifest["id"] == "com.aktivesolutions.bw-vault" and
+        'tooltipText: "FlatVault — "' in widget and
+        '(root.screen === "connections" ? "Connections" : "FlatVault")' in widget,
+        "the visible name must change without breaking existing plugin state")
 
 
 require(

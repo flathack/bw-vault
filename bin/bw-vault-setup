@@ -29,7 +29,7 @@ usage() {
 Usage: bw-vault-setup [--show | --clear]
 
 Stores your Bitwarden personal API key (client_id / client_secret) in the OS
-keyring, so the BW Vault dropdown only has to ask for your master password.
+keyring, so the FlatVault dropdown only has to ask for your master password.
 
   (no args)  prompt for client_id and client_secret and store them
   --show     report whether a key is stored (never prints the secret)
@@ -81,7 +81,7 @@ esac
 [[ -t 0 ]] || fail "run this in a terminal — it prompts for the API key"
 
 cat <<'INTRO'
-BW Vault setup
+FlatVault setup
 
 Open your Bitwarden web vault and go to:
   Account Settings -> Security -> Keys -> View API Key
@@ -100,11 +100,11 @@ echo
 
 # Piped into secret-tool's stdin rather than passed as an argument, so neither
 # value is ever visible in the process list.
-printf '%s' "$client_id" | "$secret_cmd" store --label="bw-vault client id" \
+printf '%s' "$client_id" | "$secret_cmd" store --label="FlatVault client ID" \
   service "$SERVICE" account "$ID_ACCOUNT" ||
   fail "could not write the client id to the keyring"
 
-printf '%s' "$client_secret" | "$secret_cmd" store --label="bw-vault client secret" \
+printf '%s' "$client_secret" | "$secret_cmd" store --label="FlatVault client secret" \
   service "$SERVICE" account "$SECRET_ACCOUNT" ||
   fail "could not write the client secret to the keyring"
 

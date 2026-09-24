@@ -377,7 +377,7 @@ Item {
   // so a failure means "that session is dead", not "show the user an error".
   function loadItems(speculative) {
     if (!service.helperPath) {
-      service.error = "BW Vault helper path is unavailable"
+      service.error = "FlatVault helper path is unavailable"
       service.busy = false
       return
     }
@@ -413,7 +413,7 @@ Item {
       return false
     }
     if (!service.helperPath) {
-      service.itemFetchFailed(String(token || ""), "BW Vault helper path is unavailable")
+      service.itemFetchFailed(String(token || ""), "FlatVault helper path is unavailable")
       return false
     }
     getProc.token = String(token || "")
@@ -436,7 +436,7 @@ Item {
       return false
     }
     if (!service.helperPath) {
-      service.totpFetchFailed(String(token || ""), "BW Vault helper path is unavailable")
+      service.totpFetchFailed(String(token || ""), "FlatVault helper path is unavailable")
       return false
     }
     totpProc.token = String(token || "")

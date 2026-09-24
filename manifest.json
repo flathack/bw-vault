@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "com.aktivesolutions.bw-vault",
-  "name": "BW Vault",
+  "name": "FlatVault",
   "version": "2.6.0",
   "author": "keboy",
   "license": "MIT",
-  "description": "Bitwarden vault in the Omarchy bar with multiple server endpoints and an encrypted offline copy.",
+  "description": "FlatVault for the Omarchy bar, with multiple Bitwarden server endpoints and an encrypted offline copy.",
   "kinds": [
     "service",
     "bar-widget"
@@ -15,7 +15,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "BW Vault",
+    "displayName": "FlatVault",
     "description": "Search your vault and copy a password without leaving the window you're pasting into",
     "category": "Security",
     "allowMultiple": false,

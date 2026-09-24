@@ -1,6 +1,6 @@
 # Security policy
 
-BW Vault handles credentials inside the always-running Omarchy shell process.
+FlatVault handles credentials inside the always-running Omarchy shell process.
 Treat every source change and dependency update as security-sensitive.
 
 ## Supported version

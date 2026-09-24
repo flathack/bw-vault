@@ -1,4 +1,4 @@
-// VaultModel.js — Backing logic for the BW Vault overlay.
+// VaultModel.js — Backing logic for the FlatVault overlay.
 //
 // Talks to the official `bw` CLI the way bw-tui did: reads go through the
 // CLI, and the session token is kept in memory and mirrored to the OS keyring

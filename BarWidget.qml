@@ -5,7 +5,7 @@ import qs.Commons
 import qs.Ui
 import "VaultModel.js" as VaultModel
 
-// BW Vault, in the bar. The whole plugin lives here now: unlock, search, copy,
+// FlatVault, in the bar. The whole plugin lives here now: unlock, search, copy,
 // and item detail, in a dropdown under a padlock.
 //
 // There used to be a fullscreen overlay as well. It went because the dropdown
@@ -702,7 +702,7 @@ Panel {
       id: button
       bar: root.bar
       text: root.icon
-      tooltipText: "BW Vault — " + root.statusText
+      tooltipText: "FlatVault — " + root.statusText
         + (root.lockOnRightClick && root.unlocked ? " · right: lock" : "")
       slotSize: Style.bar.statusSlot
       onPressed: function(b) {
@@ -859,7 +859,7 @@ Panel {
               textFormat: Text.PlainText
               width: parent.width
               text: root.screen === "detail" && root.detail ? root.detail.name
-                : (root.screen === "connections" ? "Connections" : "BW Vault")
+                : (root.screen === "connections" ? "Connections" : "FlatVault")
               color: root.foreground
               font.family: Style.font.family
               font.pixelSize: Style.font.title

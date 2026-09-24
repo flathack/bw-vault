@@ -1,6 +1,8 @@
-# BW Vault
+# FlatVault
 
-A Bitwarden vault in the [Omarchy](https://omarchy.org/) bar, powered by the official [`bw`](https://github.com/bitwarden/cli) CLI. Click the padlock, type a few letters, press enter — the password is on your clipboard and you never left the window you're pasting into.
+FlatVault puts your Bitwarden vault in the [Omarchy](https://omarchy.org/) bar, powered by the official [`bw`](https://github.com/bitwarden/cli) CLI. Click the bar icon, type a few letters, press enter — the password is on your clipboard and you never left the window you're pasting into.
+
+The plugin ID, CLI commands and state paths keep their `bw-vault` names so existing installations retain their connections, keyring entries and offline snapshots.
 
 Rewritten in Quickshell/QML from the [bw-tui](https://github.com/keboy/bw-tui) Bubble Tea TUI.
 
@@ -85,7 +87,7 @@ The existing CLI account remains the `default` endpoint. For another server:
 omarchy restart shell
 ```
 
-In the unlock screen, click the small pencil beside the vault status to open **Connections**. There you can select, add, edit or remove a server. Removing an added server takes two clicks. Editing the original `default` connection moves BW Vault to its own CLI data directory; your global Bitwarden CLI configuration keeps its old address. Changing a server URL clears that connection's plugin session, API key and offline copy, so set up its API key again before unlocking.
+In the unlock screen, click the small pencil beside the vault status to open **Connections**. There you can select, add, edit or remove a server. Removing an added server takes two clicks. Editing the original `default` connection moves FlatVault to its own CLI data directory; your global Bitwarden CLI configuration keeps its old address. Changing a server URL clears that connection's plugin session, API key and offline copy, so set up its API key again before unlocking.
 
 The terminal command remains available: `bw-vault-endpoints list` shows IDs and marks the selected one with `*`; `select ID`, `update ID NAME URL`, and `remove ID` manage entries. After terminal changes, restart the shell so the service drops the old in-memory vault. The `default` endpoint cannot be removed. Removal deletes an added endpoint's managed CLI data, encrypted snapshot and keyring entries. `bw-vault-setup --show` and `--clear` act on the selected endpoint.
 
@@ -96,7 +98,7 @@ The offline copy is created after a successful online list. It is encrypted with
 Bind the dropdown in `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + B", "Bitwarden vault", "omarchy-shell bw-vault-bar toggle")
+o.bind("SUPER + B", "FlatVault", "omarchy-shell bw-vault-bar toggle")
 ```
 
 Or click the shield in the bar. **Right-clicking** it locks the vault.
@@ -200,7 +202,7 @@ omarchy plugin remove com.aktivesolutions.bw-vault
 - The client_id and client_secret are stored in your OS keyring via `secret-tool`, never in a plaintext file, and are passed to `bw login --apikey` through the child process environment rather than argv. The master password is held only while an asynchronous keyring lookup or authentication child needs it, then cleared on every success and failure path.
 - Credentials handed to `bw login` / `bw unlock` have that environment cleared when the child exits, on both the success and failure paths. Before 2.0 the master password stayed set on the Process until the next unlock overwrote it.
 - **Item metadata is cached between opens.** A short-lived helper reduces `bw list` output to names, usernames, ids, types, URIs and a TOTP presence flag before it enters the long-lived QML process. Passwords and notes never enter the service's list buffer. The metadata lives until you lock or `cacheTtlMinutes` of idleness passes.
-- **Offline snapshots contain passwords and notes.** The helper selects item IDs, names, types, usernames, passwords, notes, URIs and a TOTP presence flag, then encrypts them with Fernet before writing a mode-0600 file. TOTP seeds and custom fields are omitted. The random encryption key lives in Secret Service, scoped to the endpoint. This protects the disk copy while the keyring is locked; it does not protect it from software running as you while your keyring is unlocked. Locking BW Vault clears the QML list, but the encrypted offline snapshot remains available for future offline use.
+- **Offline snapshots contain passwords and notes.** The helper selects item IDs, names, types, usernames, passwords, notes, URIs and a TOTP presence flag, then encrypts them with Fernet before writing a mode-0600 file. TOTP seeds and custom fields are omitted. The random encryption key lives in Secret Service, scoped to the endpoint. This protects the disk copy while the keyring is locked; it does not protect it from software running as you while your keyring is unlocked. Locking FlatVault clears the QML list, but the encrypted offline snapshot remains available for future offline use.
 - **Detail reads use the encrypted snapshot only after a successful list read for the active session.** A failed snapshot update disables the fast path and deletes the old snapshot. The list's refresh icon fetches current items and replaces the snapshot; until then, details reflect its last successful refresh.
 - Item passwords are fetched on demand through the same field-limiting helper. Reads are serialized, so a delayed response cannot be attributed to a newer selection. The password is separated from item metadata before the service emits it, and temporary process buffers and `BW_SESSION` environments are cleared after each request. The widget retains a password only while its detail screen is showing it.
 - TOTP seeds never enter QML. List and detail helpers emit only a `hasTotp` boolean; separate `bw get totp <id>` invocations ask the official Bitwarden CLI to calculate current codes. List codes are fetched only for visible entries, refreshed each 30-second period, and discarded when the list closes, the filter hides them, or the vault locks. Codes cannot be fetched offline.

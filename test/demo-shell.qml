@@ -92,7 +92,7 @@ ShellRoot {
         anchors.left: parent.left
         anchors.leftMargin: Style.space(10)
         anchors.verticalCenter: parent.verticalCenter
-        text: "bw-vault demo — fixture vault, no real credentials"
+        text: "FlatVault demo — fixture vault, no real credentials"
         color: Qt.darker(Color.bar.text, 1.6)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
